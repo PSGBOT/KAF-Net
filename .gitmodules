@@ -1,0 +1,3 @@
+[submodule "lib/DCNv2"]
+	path = lib/DCNv2
+	url = https://github.com/Chen-Yulin/DCNv2.git
