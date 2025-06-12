@@ -1,0 +1,2 @@
+Namespace(local_rank=0, dist=False, root_dir='./', data_dir='./data', log_name='coco_hg_512_dp', pretrain_name='pretrain', dataset='coco', arch='large_hourglass', img_size=512, split_ratio=1.0, lr=0.0005, lr_step=[90, 120], batch_size=16, num_epochs=140, test_topk=100, log_interval=100, val_interval=5, num_workers=2, log_dir='./logs/coco_hg_512_dp', ckpt_dir='./ckpt/coco_hg_512_dp', pretrain_dir='./ckpt/pretrain/checkpoint.t7') [2025-06-12 13:33:52,057]
+Setting up data... [2025-06-12 13:33:52,077]
