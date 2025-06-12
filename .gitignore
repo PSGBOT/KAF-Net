@@ -194,8 +194,7 @@ cython_debug/
 .cursorindexingignore
 
 # dataset
-data/coc
-data/voc
+data/
 
 # weights
-ckpt
+ckpt/
