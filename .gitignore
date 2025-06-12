@@ -198,3 +198,6 @@ data/
 
 # weights
 ckpt/
+
+# logs
+logs/
