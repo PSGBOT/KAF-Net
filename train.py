@@ -13,13 +13,13 @@ import numpy as np
 import torch.nn as nn
 import torch.utils.data
 import torch.distributed as dist
-
+torch.backends.cudnn.enabled = False
 from datasets.coco import COCO, COCO_eval
 from datasets.pascal import PascalVOC, PascalVOC_eval
 
 from nets.hourglass import get_hourglass
 from nets.resdcn import get_pose_net
-
+from nets.fcsgg import get_fcsgg
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -111,6 +111,9 @@ def main():
   print('Creating model...')
   if 'hourglass' in cfg.arch:
     model = get_hourglass[cfg.arch]
+  ## I add the model code to hourglass.py    
+  elif 'fcsgg' in cfg.arch:
+    model = get_fcsgg[cfg.arch]
   elif 'resdcn' in cfg.arch:
     model = get_pose_net(num_layers=int(cfg.arch.split('_')[-1]), num_classes=train_dataset.num_classes)
   else:
