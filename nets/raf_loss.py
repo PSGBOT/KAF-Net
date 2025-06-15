@@ -128,8 +128,14 @@ class RAFLoss(nn.Module):
 def _raf_loss(rafs, gt_rafs):
   ''' Raf loss. Exactly the same as fcsgg.
       Arguments:
-      preds (B x r*2 x h x w)
-      gt_rafs (B x r*2 x h x w)
+        preds: (B x r*2 x h x w)
+        gt_rafs: a List[Dict] with B dicts:
+          { 
+          gt_relations: tensor (r*2 x h x w)
+          gt_relations_weights: tensor (r*2 x h x w)
+          }
+      Returns:
+        raf_loss: a scalar tensor
   '''
   raf_loss_evaluator = RAFLoss(cos_similar=False, beta=0.999, reduction='mean', loss_weight=1.0)
   raf_loss = raf_loss_evaluator(rafs, gt_rafs)
