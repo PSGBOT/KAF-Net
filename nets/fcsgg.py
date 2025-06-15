@@ -154,12 +154,63 @@ class exkp(nn.Module):
         inter = self.inters[ind](inter)
     return outs
 
+class fcsgg(nn.Module):
+  def __init__(self, n, nstack, dims, modules, cnv_dim=256, num_classes=80, num_relations=50):
+    super(fcsgg, self).__init__()
+
+    self.nstack = nstack
+    self.num_classes = num_classes
+    
+    curr_dim = dims[0]
+
+    self.pre = nn.Sequential(convolution(7, 3, 128, stride=2),
+                             residual(3, 128, curr_dim, stride=2))
+
+    self.kps = nn.ModuleList([kp_module(n, dims, modules) for _ in range(nstack)])
+
+    self.cnvs = nn.ModuleList([convolution(3, curr_dim, cnv_dim) for _ in range(nstack)])
+
+    self.inters = nn.ModuleList([residual(3, curr_dim, curr_dim) for _ in range(nstack - 1)])
+
+    self.inters_ = nn.ModuleList([nn.Sequential(nn.Conv2d(curr_dim, curr_dim, (1, 1), bias=False),
+                                                nn.BatchNorm2d(curr_dim))
+                                  for _ in range(nstack - 1)])
+    self.cnvs_ = nn.ModuleList([nn.Sequential(nn.Conv2d(cnv_dim, curr_dim, (1, 1), bias=False),
+                                              nn.BatchNorm2d(curr_dim))
+                                for _ in range(nstack - 1)])
+    # heatmap layers
+    self.hmap = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, num_classes) for _ in range(nstack)])
+    for hmap in self.hmap:
+      hmap[-1].bias.data.fill_(-2.19)
+
+    # regression layers
+    self.regs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2) for _ in range(nstack)])
+    self.w_h_ = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2) for _ in range(nstack)])
+    self.rafs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2*num_relations) for _ in range(nstack)])
+    self.relu = nn.ReLU(inplace=True)
+
+  def forward(self, image):
+    inter = self.pre(image)
+
+    outs = []
+    for ind in range(self.nstack):
+      kp = self.kps[ind](inter)
+      cnv = self.cnvs[ind](kp)
+
+      if self.training or ind == self.nstack - 1:
+        outs.append([self.hmap[ind](cnv), self.regs[ind](cnv), self.w_h_[ind](cnv), self.rafs[ind](cnv)])
+
+      if ind < self.nstack - 1:
+        inter = self.inters_[ind](inter) + self.cnvs_[ind](cnv)
+        inter = self.relu(inter)
+        inter = self.inters[ind](inter)
+    return outs
 
 get_fcsgg = \
   {'fcsgg':
-     exkp(n=5, nstack=2, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4]),
+     fcsgg(n=5, nstack=2, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4]),
    'small_fcsgg':
-     exkp(n=5, nstack=1, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4])}
+     fcsgg(n=5, nstack=1, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4])}
 
 if __name__ == '__main__':
   from collections import OrderedDict

@@ -16,7 +16,7 @@ import torch.distributed as dist
 torch.backends.cudnn.enabled = False
 from datasets.coco import COCO, COCO_eval
 from datasets.pascal import PascalVOC, PascalVOC_eval
-
+from nets.raf_loss import _raf_loss
 from nets.hourglass import get_hourglass
 from nets.resdcn import get_pose_net
 from nets.fcsgg import get_fcsgg
@@ -144,14 +144,15 @@ def main():
           batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
       outputs = model(batch['image'])
-      hmap, regs, w_h_ = zip(*outputs)
+      hmap, regs, w_h_, raf = zip(*outputs)
       regs = [_tranpose_and_gather_feature(r, batch['inds']) for r in regs]
       w_h_ = [_tranpose_and_gather_feature(r, batch['inds']) for r in w_h_]
-
+      
       hmap_loss = _neg_loss(hmap, batch['hmap'])
       reg_loss = _reg_loss(regs, batch['regs'], batch['ind_masks'])
       w_h_loss = _reg_loss(w_h_, batch['w_h_'], batch['ind_masks'])
-      loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss
+      raf_loss = _raf_loss(raf, batch['raf'])
+      loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
 
       optimizer.zero_grad()
       loss.backward()
@@ -161,14 +162,15 @@ def main():
         duration = time.perf_counter() - tic
         tic = time.perf_counter()
         print('[%d/%d-%d/%d] ' % (epoch, cfg.num_epochs, batch_idx, len(train_loader)) +
-              ' hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f' %
-              (hmap_loss.item(), reg_loss.item(), w_h_loss.item()) +
+              ' hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f' %
+              (hmap_loss.item(), reg_loss.item(), w_h_loss.item(), raf_loss.item()) +
               ' (%d samples/sec)' % (cfg.batch_size * cfg.log_interval / duration))
 
         step = len(train_loader) * epoch + batch_idx
         summary_writer.add_scalar('hmap_loss', hmap_loss.item(), step)
         summary_writer.add_scalar('reg_loss', reg_loss.item(), step)
         summary_writer.add_scalar('w_h_loss', w_h_loss.item(), step)
+        summary_writer.add_scalar('raf_loss', raf_loss.item(), step)
     return
 
   def val_map(epoch):
