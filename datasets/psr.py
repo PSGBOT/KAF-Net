@@ -8,6 +8,7 @@ from utils.image import get_border, get_affine_transform, color_aug
 
 
 PSR_FUNC_CAT = [
+    "other",
     "handle",
     "housing",
     "support",
@@ -20,11 +21,11 @@ PSR_FUNC_CAT = [
     "port",
     "door",
     "container",
-    "other",
 ]
 PSR_FUNC_CAT_IDX = {v: i for i, v in enumerate(PSR_FUNC_CAT)}
 
 PSR_KR_CAT = [
+    "unknown",
     "fixed",
     "revolute-free",
     "revolute-controlled",
@@ -38,7 +39,6 @@ PSR_KR_CAT = [
     "supported",
     "flexible",
     "unrelated",
-    "unknown",
 ]
 
 PSR_KR_CAT_IDX = {v: i for i, v in enumerate(PSR_KR_CAT)}
@@ -93,39 +93,25 @@ class PSRDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        sample_path = self.samples[idx]
+    def _parse_relations(self, relations):
+        # relations is expected to be a dictionary, e.g., {'type': 'revolute-free', 'root_index': 0}
+        joint_type = relations.get("joint_type", "unknown")
+        controllable = relations.get("controllable")
 
-        # Load config.json
-        config_path = os.path.join(sample_path, "config.json")
-        with open(config_path, "r") as f:
-            config = json.load(f)
+        if joint_type in ["fixed", "unrelated", "supported", "flexible"]:
+            relation_type = joint_type
+        elif controllable:
+            relation_type = f"{joint_type}-{controllable}"
+        else:
+            relation_type = joint_type  # Fallback, though should be covered by above
 
-        # Load src_img.png and masks, set the border of the masks to be 128(gray), combine these masks together into the 4th channel of the source image => `masked_img`
-        src_img_path = os.path.join(sample_path, "src_img.png")
-        src_img = Image.open(src_img_path).convert("RGB")
-        src_img = np.asarray(src_img)
-        height, width = src_img.shape[0], src_img.shape[1]
-        center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
-        scale = max(height, width) * 1.0
+        relation_idx = self.kr_cat_ids.get(relation_type, 0)
+        root = int(relations.get("root", 0))  # Convert root to integer
+        return relation_idx, root
 
-        # Data augmentation parameters (determined once for both image and masks)
-        flipped = False
-        if self.split == "train":
-            scale = scale * np.random.choice(self.rand_scales)
-            w_border = get_border(128, width)
-            h_border = get_border(128, height)
-            center[0] = np.random.randint(low=w_border, high=width - w_border)
-            center[1] = np.random.randint(low=h_border, high=height - h_border)
-
-            if np.random.random() < 0.5:
-                flipped = True
-
-        # Affine transform matrix (determined once for both image and masks)
-        trans_img = get_affine_transform(
-            center, scale, 0, [self.img_size["w"], self.img_size["h"]]
-        )
-
+    def _process_image_and_masks(
+        self, sample_path, src_img, width, height, center, scale, flipped, trans_img
+    ):
         # Apply flipping to src_img
         if flipped:
             src_img = src_img[:, ::-1, :]
@@ -147,14 +133,15 @@ class PSRDataset(Dataset):
         masks_dir = sample_path
         origin_mask_width = 640
         origin_mask_height = 480
+        masks_bbox = {}
         if os.path.exists(masks_dir):
             all_contours = []
             for mask_filename in os.listdir(masks_dir):
-                if mask_filename.startswith("mask"):  # Assuming masks are PNGs
+                if mask_filename.startswith(
+                    "mask"
+                ):  # Assuming masks: "mask0.png" "mask1.png"...
                     mask_path = os.path.join(masks_dir, mask_filename)
                     mask = Image.open(mask_path).convert("L")  # Load as grayscale
-                    origin_mask_height = np.asarray(mask).shape[0]
-                    origin_mask_width = np.asarray(mask).shape[1]
                     # Resize mask to original image size before any transformations
                     mask = mask.resize((width, height), Image.BILINEAR)
                     mask = np.asarray(mask)
@@ -175,7 +162,21 @@ class PSRDataset(Dataset):
                     # Ensure mask is binary (0 or 255) for findContours
                     mask_binary = (mask > 0).astype(np.uint8) * 255
 
-                    erode_mask = cv2.erode(mask, None, iterations=2)
+                    # find bbox scale of the mask
+                    bbox = cv2.boundingRect(mask_binary)
+                    # get the height and width
+                    mask_height = bbox[3]
+                    mask_width = bbox[2]
+                    # get the center
+                    mask_center = (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
+
+                    masks_bbox[os.path.splitext(mask_filename)[0]] = {
+                        "center": mask_center,
+                        "scale": [mask_width, mask_height],
+                    }
+
+                    kernel = np.ones((3, 3), np.uint8)
+                    erode_mask = cv2.erode(mask, kernel, iterations=1)
                     contours, _ = cv2.findContours(
                         erode_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                     )
@@ -185,12 +186,7 @@ class PSRDataset(Dataset):
                     combined_masks_channel = np.maximum(
                         combined_masks_channel, mask_binary
                     )
-                    # DEBUG: show the combined_masks here
-                    cv2.imwrite(
-                        "debug_outputs/combined_masks_channel.png",
-                        combined_masks_channel * 255,
-                    )
-                cv2.drawContours(combined_masks_channel, all_contours, -1, (128,), 5)
+                cv2.drawContours(combined_masks_channel, all_contours, -1, (128,), 3)
 
         # Convert src_img and combined_masks_channel to float and normalize to 0-1
         src_img = src_img.astype(np.float32) / 255.0
@@ -217,20 +213,120 @@ class PSRDataset(Dataset):
         masked_img -= extended_mean
         masked_img /= extended_std
         masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, C+1] to [C+1, H, W]
+        return masked_img, masks_bbox
 
-        # Transform part_center coordinates
-        part_centers = {}
-        for key in config["part center"]:
-            part_center = np.array(config["part center"][key], dtype=np.float32)
-            part_center[0] *= width / origin_mask_width
-            part_center[1] *= height / origin_mask_height
-            if flipped:
-                part_center[0] = width - part_center[0] - 1
-            part_center = cv2.transform(part_center[None, None, :], trans_img)[0, 0, :]
-            part_centers[key] = part_center
+    def __getitem__(self, idx):
+        sample_path = self.samples[idx]
+
+        # Load config.json
+        config_path = os.path.join(sample_path, "config.json")
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        # Load src_img.png and masks, set the border of the masks to be 128(gray), combine these masks together into the 4th channel of the source image => `masked_img`
+        src_img_path = os.path.join(sample_path, "src_img.png")
+        src_img = Image.open(src_img_path).convert("RGB")
+        src_img = np.asarray(src_img)
+        height, width = src_img.shape[0], src_img.shape[1]
+        center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
+        scale = max(height, width) * 1.0
+
+        # Data augmentation parameters (determined once for both image and masks)
+        flipped = False
+        if self.split == "train":
+            scale = scale * np.random.choice(self.rand_scales)
+            # w_border = get_border(128, width)
+            # h_border = get_border(128, height)
+            # center[0] = np.random.randint(low=w_border, high=width - w_border)
+            # center[1] = np.random.randint(low=h_border, high=height - h_border)
+
+            if np.random.random() < 0.5:
+                flipped = True
+
+        # Affine transform matrix (determined once for both image and masks)
+        trans_img = get_affine_transform(
+            center, scale, 0, [self.img_size["w"], self.img_size["h"]]
+        )
+
+        masked_img, masks_bbox = self._process_image_and_masks(
+            sample_path,
+            src_img.copy(),
+            width,
+            height,
+            center,
+            scale,
+            flipped,
+            trans_img,
+        )
+
+        masks_cat = {}
+        kr = []
+        # assign category index to each mask
+        for pair_relation in config["kinematic relation"]:
+            if pair_relation[0] not in masks_cat:
+                masks_cat[pair_relation[0]] = {}
+            if pair_relation[1] not in masks_cat:
+                masks_cat[pair_relation[1]] = {}
+
+            part0_cat_str_list = pair_relation[2]["part0_function"]
+            for cat_str in part0_cat_str_list:
+                part0_cat_idx = self.func_cat_ids.get(cat_str, 0)
+                if part0_cat_idx not in masks_cat[pair_relation[0]]:
+                    masks_cat[pair_relation[0]][part0_cat_idx] = 1
+                else:
+                    masks_cat[pair_relation[0]][part0_cat_idx] += 1
+
+            part1_cat_str_list = pair_relation[2]["part1_function"]
+            for cat_str in part1_cat_str_list:
+                part1_cat_idx = self.func_cat_ids.get(cat_str, 0)
+                if part1_cat_idx not in masks_cat[pair_relation[1]]:
+                    masks_cat[pair_relation[1]][part1_cat_idx] = 1
+                else:
+                    masks_cat[pair_relation[1]][part1_cat_idx] += 1
+
+            kjs = pair_relation[2]["kinematic_joints"]
+            for kj in kjs:
+                relation_idx, root = self._parse_relations(kj)
+                if root == 0:
+                    kr.append([pair_relation[1], pair_relation[0], relation_idx])
+                else:
+                    kr.append([pair_relation[0], pair_relation[1], relation_idx])
 
         return {
             "masked_img": masked_img,
-            "part_center": part_centers,
-            "kinematic_relation": config["kinematic relation"],
+            "masks_cat": masks_cat,
+            "masks_bbox": masks_bbox,
+            "kinematic_relation": kr,
         }
+
+
+# masked_img: [4, 512, 512]
+# three RGB channel and one mask channel
+
+# masks_cat structure:
+# {
+#   "mask0": {
+#     cat1: number of shot,
+#     cat2: number of shot,
+#     ...
+#   },
+#   "mask1": {
+#     ...
+#   },
+#   ...
+# }
+
+# masks_bbox structure:
+# {
+#   "mask0": {
+#     "center": [x, y],
+#     "scale": [w, h]
+#   },
+#   ...
+# }
+
+# kr structure: [
+#   [part1, part2, relation_idx],
+#   [part2, part3, relation_idx],
+#   ...
+# ]
