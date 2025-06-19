@@ -4,7 +4,7 @@ import os
 from PIL import Image
 import numpy as np
 import cv2
-from utils.image import get_border, get_affine_transform, color_aug
+from utils.image import get_affine_transform, color_aug
 
 
 PSR_FUNC_CAT = [
@@ -131,8 +131,6 @@ class PSRDataset(Dataset):
 
         # Load and process individual masks
         masks_dir = sample_path
-        origin_mask_width = 640
-        origin_mask_height = 480
         masks_bbox = {}
         if os.path.exists(masks_dir):
             all_contours = []
