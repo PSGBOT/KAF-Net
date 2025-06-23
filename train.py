@@ -12,6 +12,7 @@ import numpy as np
 
 from datasets.coco import COCO, COCO_eval
 from datasets.pascal import PascalVOC, PascalVOC_eval
+from datasets.psr import PSRDataset
 from nets.raf_loss import _raf_loss
 from nets.hourglass import get_hourglass
 from nets.resdcn import get_pose_net
@@ -97,7 +98,9 @@ def main():
         cfg.device = torch.device("cuda")
 
     print("Setting up data...")
-    Dataset = COCO if cfg.dataset == "coco" else PascalVOC
+    # Dataset = COCO if cfg.dataset == "coco" else PascalVOC
+    # onlt test psr dataset
+    Dataset = PSRDataset
     train_dataset = Dataset(
         cfg.data_dir, "train", split_ratio=cfg.split_ratio, img_size=cfg.img_size
     )
@@ -113,7 +116,7 @@ def main():
         drop_last=True,
         sampler=train_sampler if cfg.dist else None,
     )
-
+    # not implemented for now
     Dataset_eval = COCO_eval if cfg.dataset == "coco" else PascalVOC_eval
     val_dataset = Dataset_eval(cfg.data_dir, "val", test_scales=[1.0], test_flip=False)
     val_loader = torch.utils.data.DataLoader(
@@ -169,8 +172,9 @@ def main():
                 if k != "meta":
                     batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
-            outputs = model(batch["image"])
+            outputs = model(batch["masked_image"])
             hmap, regs, w_h_, raf = zip(*outputs)
+            
             regs = [_tranpose_and_gather_feature(r, batch["inds"]) for r in regs]
             w_h_ = [_tranpose_and_gather_feature(r, batch["inds"]) for r in w_h_]
 
@@ -275,8 +279,9 @@ def main():
     for epoch in range(1, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
         train(epoch)
-        if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
-            val_map(epoch)
+        # psr_eval is not implemented for now
+        # if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
+        #     val_map(epoch)
         print(saver.save(model.module.state_dict(), "checkpoint"))
         lr_scheduler.step(epoch)  # move to here after pytorch1.1.0
 

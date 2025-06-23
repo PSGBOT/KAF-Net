@@ -92,10 +92,15 @@ class COCO(data.Dataset):
     annotations = self.coco.loadAnns(ids=ann_ids)
     labels = np.array([self.cat_ids[anno['category_id']] for anno in annotations])
     bboxes = np.array([anno['bbox'] for anno in annotations], dtype=np.float32)
+    """
+    - Extracts the `'bbox'` field from each annotation and creates a numpy array of shape `[num_boxes, 4]`.
+    - Each bbox is in **COCO format**: `[x, y, w, h]` (top-left x, top-left y, width, height).
+    """
+
     if len(bboxes) == 0:
       bboxes = np.array([[0., 0., 0., 0.]], dtype=np.float32)
       labels = np.array([[0]])
-    bboxes[:, 2:] += bboxes[:, :2]  # xywh to xyxy
+    bboxes[:, 2:] += bboxes[:, :2]  # xywh to xyxy, top-left x, top-left y, bottom-right x, bottom-right y
 
     img = cv2.imread(img_path)
     height, width = img.shape[0], img.shape[1]
@@ -103,6 +108,7 @@ class COCO(data.Dataset):
     scale = max(height, width) * 1.0
 
     flipped = False
+    #augmentation
     if self.split == 'train':
       scale = scale * np.random.choice(self.rand_scales)
       w_border = get_border(128, width)

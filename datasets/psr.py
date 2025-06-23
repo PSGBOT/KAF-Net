@@ -1,11 +1,15 @@
 from torch.utils.data import Dataset
+import torch
+import torch.nn.functional as F
 import json
 import os
 from PIL import Image
 import numpy as np
 import cv2
+import math
 from utils.image import get_affine_transform, color_aug
-
+from utils.image import get_border, get_affine_transform, affine_transform, color_aug
+from utils.image import draw_umich_gaussian, gaussian_radius
 
 PSR_FUNC_CAT = [
     "other",
@@ -65,6 +69,7 @@ class PSRDataset(Dataset):
 
         self.num_func_cat = len(self.func_cat)
         self.num_kr_cat = len(self.kr_cat)
+        self.max_objs = 128
 
         self.data_rng = np.random.RandomState(123)
         self.mean = np.array(PSR_MEAN, dtype=np.float32)[None, None, :]
@@ -76,9 +81,11 @@ class PSRDataset(Dataset):
         self.split_ratio = split_ratio
 
         self.padding = 127  # 31 for resnet/resdcn
-        self.img_size = {"h": img_size, "w": img_size}
+        self.down_ratio = 4
+        self.img_size = {'h': img_size, 'w': img_size}
+        self.fmap_size = {'h': img_size // self.down_ratio, 'w': img_size // self.down_ratio}
+        self.gaussian_iou = 0.7
         self.rand_scales = np.arange(1, 1.4, 0.1)
-
         for sample_name in os.listdir(root_dir):
             sample_path = os.path.join(root_dir, sample_name)
             if os.path.isdir(sample_path):
@@ -289,42 +296,94 @@ class PSRDataset(Dataset):
                     kr.append([pair_relation[1], pair_relation[0], relation_idx])
                 else:
                     kr.append([pair_relation[0], pair_relation[1], relation_idx])
+        #get gt for training
+        img = masked_img[:3, :, :]  # Extract RGB channels only
+        trans_fmap = get_affine_transform(center, scale, 0, [self.fmap_size['w'], self.fmap_size['h']])
+
+        hmap = np.zeros((self.num_func_cat, self.fmap_size['h'], self.fmap_size['w']), dtype=np.float32)  # heatmap
+        w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
+        regs = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
+        inds = np.zeros((self.max_objs,), dtype=np.int64)
+        ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
+        obj_idx = 0
+        for mask_name, cat_dict in masks_cat.items():
+            # Get bbox info for this mask
+            bbox_info = masks_bbox[mask_name]
+            center = bbox_info["center"]  # [x, y] in image space
+            scale = bbox_info["scale"]    # [w, h] in image space
+
+            # Transform center to feature map space
+            center_fmap = affine_transform(center, trans_fmap)
+            center_fmap = np.array(center_fmap, dtype=np.float32)
+            center_int = center_fmap.astype(np.int32)
+
+            w, h = scale
+            w = w * self.fmap_size['w'] / self.img_size['w']
+            h = h * self.fmap_size['h'] / self.img_size['h']
+
+            for cat_idx in cat_dict:  # cat_idx is the category index
+                # For each category this mask belongs to, draw a heatmap
+                radius = max(0, int(gaussian_radius((math.ceil(h), math.ceil(w)), self.gaussian_iou)))
+                draw_umich_gaussian(hmap[cat_idx], center_int, radius)
+
+                if obj_idx < self.max_objs:
+                    w_h_[obj_idx] = [w, h]
+                    regs[obj_idx] = center_fmap - center_int
+                    inds[obj_idx] = center_int[1] * self.fmap_size['w'] + center_int[0]
+                    ind_masks[obj_idx] = 1
+                    obj_idx += 1
+        # TO test
+        raf_field = torch.rand(self.num_kr_cat * 2, h, w)
+        raf_weights = torch.rand(self.num_kr_cat * 2, h, w)
 
         return {
             "masked_img": masked_img,
             "masks_cat": masks_cat,
             "masks_bbox": masks_bbox,
             "kinematic_relation": kr,
+            'hmap': hmap,
+            'w_h_': w_h_,
+            'regs': regs,
+            'inds': inds,
+            'ind_masks': ind_masks,
+            'raf': {
+                'gt_relations': raf_field,
+                'gt_relations_weights': raf_weights
+            }
         }
 
+"""
+masked_img: [4, 512, 512]
+three RGB channel and one mask channel
 
-# masked_img: [4, 512, 512]
-# three RGB channel and one mask channel
+masks_cat structure:
+{
+  "mask0": {
+    cat1: number of shot,
+    cat2: number of shot,
+    ...
+  },
+  "mask1": {
+    ...
+  },
+  ...
+}
 
-# masks_cat structure:
-# {
-#   "mask0": {
-#     cat1: number of shot,
-#     cat2: number of shot,
-#     ...
-#   },
-#   "mask1": {
-#     ...
-#   },
-#   ...
-# }
+masks_bbox structure:
+{
+  "mask0": {
+    "center": [x, y],
+    "scale": [w, h]
+  },
+  ...
+}
 
-# masks_bbox structure:
-# {
-#   "mask0": {
-#     "center": [x, y],
-#     "scale": [w, h]
-#   },
-#   ...
-# }
+kr structure: [
+  [part1, part2, relation_idx],
+  [part2, part3, relation_idx],
+  ...
+]
+"""
 
-# kr structure: [
-#   [part1, part2, relation_idx],
-#   [part2, part3, relation_idx],
-#   ...
-# ]
+
+
