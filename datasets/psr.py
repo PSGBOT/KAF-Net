@@ -109,9 +109,10 @@ class PSRDataset(Dataset):
         root = int(relations.get("root", 0))  # Convert root to integer
         return relation_idx, root
 
-    def _process_image_and_masks(
-        self, sample_path, src_img, width, height, center, scale, flipped, trans_img
-    ):
+    def _process_image_and_masks(self, sample_path, src_img, flipped, trans_img):
+        height, width = src_img.shape[0], src_img.shape[1]
+        # center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
+        # scale = max(height, width) * 1.0
         # Apply flipping to src_img
         if flipped:
             src_img = src_img[:, ::-1, :]
@@ -249,10 +250,6 @@ class PSRDataset(Dataset):
         masked_img, masks_bbox = self._process_image_and_masks(
             sample_path,
             src_img.copy(),
-            width,
-            height,
-            center,
-            scale,
             flipped,
             trans_img,
         )
