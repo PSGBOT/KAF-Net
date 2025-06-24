@@ -7,7 +7,7 @@ from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD
 
 def visualize_dataset(root_dir, img_size=512):
     dataset = PSRDataset(root_dir=root_dir, split="train", img_size=img_size)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 
     for i, data in enumerate(dataloader):
         masked_img = data["masked_img"][0].numpy()  # Get the first image from the batch
@@ -26,21 +26,35 @@ def visualize_dataset(root_dir, img_size=512):
         unnormalized_masked_img = masked_img.transpose(1, 2, 0)
 
         # Visualize each channel
-        fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-        titles = ["Red Channel", "Green Channel", "Blue Channel", "Mask Channel"]
+        fig, axes = plt.subplots(1, 6, figsize=(16, 4))
+        hmap = data["hmap"][0].numpy()
+        w_h_ = data["w_h_"][0].numpy()
+        regs = data["regs"][0].numpy()
+        inds = data["inds"][0].numpy()
+        ind_masks = data["ind_masks"][0].numpy()
 
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        axes = axes.flatten()
+
+        titles = [
+            "Red Channel",
+            "Green Channel",
+            "Blue Channel",
+            "Mask Channel",
+            "Hmap (Door Category)",
+            "Width/Height & Regs",
+        ]
+
+        # Display RGB and Mask channels
         for channel_idx in range(4):
             ax = axes[channel_idx]
-            # Display each channel as grayscale
             ax.imshow(unnormalized_masked_img[:, :, channel_idx], cmap="gray")
             ax.set_title(titles[channel_idx])
             ax.axis("off")
 
-            # Spot the center point on the mask channel (channel_idx == 3)
             if channel_idx == 3:  # Mask channel
                 part_centers = data["masks_bbox"]
                 for part_name, bbox in part_centers.items():
-                    # center_coords are (x, y)
                     ax.scatter(
                         bbox["center"][0],
                         bbox["center"][1],
@@ -50,9 +64,6 @@ def visualize_dataset(root_dir, img_size=512):
                         linewidths=2,
                         label=part_name,
                     )
-                    # Draw bounding box rectangle
-                    # bbox["scale"] is [width, height]
-                    # bbox["center"] is [x, y]
                     width_bbox = bbox["scale"][0]
                     height_bbox = bbox["scale"][1]
                     x_min = bbox["center"][0] - width_bbox / 2
@@ -67,12 +78,78 @@ def visualize_dataset(root_dir, img_size=512):
                         facecolor="none",
                     )
                     ax.add_patch(rect)
-                ax.legend()  # Show legend for part names
+                ax.legend()
 
-        plt.suptitle(f"Masked Image {i + 1} - Channel by Channel")
-        plt.tight_layout(
-            rect=[0, 0.03, 1, 0.95]
-        )  # Adjust layout to prevent suptitle overlap
+        # Display Hmap for a specific category (e.g., 'door' which is index 11)
+        ax = axes[4]
+        # Assuming 'door' is at index 11 in PSR_FUNC_CAT
+        # You might want to make this dynamic or configurable
+        door_hmap_idx = dataset.func_cat_ids.get("door", -1)
+        if door_hmap_idx != -1 and hmap.shape[0] > door_hmap_idx:
+            ax.imshow(hmap[door_hmap_idx], cmap="hot", alpha=1)
+            ax.set_title(titles[4])
+            ax.axis("off")
+
+            # Overlay center points from inds and regs on the heatmap
+            for obj_idx in range(len(inds)):
+                if ind_masks[obj_idx] == 1:
+                    fmap_w = dataset.fmap_size["w"]
+                    center_fmap_x = inds[obj_idx] % fmap_w + regs[obj_idx, 0]
+                    center_fmap_y = inds[obj_idx] // fmap_w + regs[obj_idx, 1]
+                    ax.scatter(
+                        center_fmap_x,
+                        center_fmap_y,
+                        color="blue",
+                        marker="x",
+                        s=50,
+                        edgecolors="white",
+                        linewidths=1,
+                    )
+        else:
+            ax.set_title(f"{titles[4]} (Not Available)")
+            ax.axis("off")
+
+        # Display w_h_ and regs
+        ax = axes[5]
+        ax.set_title(titles[5])
+        ax.axis("off")
+
+        # Filter out zero entries (where ind_masks is 0)
+        valid_indices = np.where(ind_masks == 1)[0]
+        valid_w_h_ = w_h_[valid_indices]
+        valid_regs = regs[valid_indices]
+
+        if len(valid_indices) > 0:
+            table_data = []
+            for j in range(len(valid_indices)):
+                table_data.append(
+                    [
+                        f"{valid_w_h_[j, 0]:.2f}",
+                        f"{valid_w_h_[j, 1]:.2f}",
+                        f"{valid_regs[j, 0]:.2f}",
+                        f"{valid_regs[j, 1]:.2f}",
+                    ]
+                )
+            col_labels = ["Width", "Height", "Reg_X", "Reg_Y"]
+            ax.table(
+                cellText=table_data,
+                colLabels=col_labels,
+                loc="center",
+                cellLoc="center",
+            )
+            ax.set_title(titles[5])
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "No valid objects",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=ax.transAxes,
+            )
+
+        plt.suptitle(f"Dataset Visualization Sample {i + 1}")
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.show()
 
         if i == 5:  # Visualize 5 images for demonstration
@@ -80,7 +157,5 @@ def visualize_dataset(root_dir, img_size=512):
 
 
 if __name__ == "__main__":
-    # Replace 'path/to/your/psr_dataset' with the actual path to your dataset
-    # Example: root_dir = '/home/user/data/psr_dataset'
-    root_directory = "/home/cyl/Reconst/KAF-Net/data/Sample PSR/"
+    root_directory = "/home/cyl/Reconst/Data/PSR/deep_furniture_part1/"
     visualize_dataset(root_directory)

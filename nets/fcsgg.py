@@ -155,7 +155,7 @@ class exkp(nn.Module):
     return outs
 
 class fcsgg(nn.Module):
-  def __init__(self, n, nstack, dims, modules, cnv_dim=256, num_classes=80, num_relations=50):
+  def __init__(self, n, nstack, dims, modules, cnv_dim=256, num_classes=13, num_relations=14):
     super(fcsgg, self).__init__()
 
     self.nstack = nstack
@@ -163,7 +163,7 @@ class fcsgg(nn.Module):
     
     curr_dim = dims[0]
 
-    self.pre = nn.Sequential(convolution(7, 3, 128, stride=2),
+    self.pre = nn.Sequential(convolution(7, 4, 128, stride=2),
                              residual(3, 128, curr_dim, stride=2))
 
     self.kps = nn.ModuleList([kp_module(n, dims, modules) for _ in range(nstack)])

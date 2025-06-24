@@ -1,11 +1,15 @@
 from torch.utils.data import Dataset
+import torch
+import torch.nn.functional as F
 import json
 import os
 from PIL import Image
 import numpy as np
 import cv2
-from utils.image import get_border, get_affine_transform, color_aug
-
+import math
+from utils.image import get_affine_transform, color_aug
+from utils.image import get_border, get_affine_transform, affine_transform, color_aug
+from utils.image import draw_umich_gaussian, gaussian_radius
 
 PSR_FUNC_CAT = [
     "other",
@@ -55,6 +59,7 @@ PSR_EIGEN_VECTORS = [
 
 class PSRDataset(Dataset):
     def __init__(self, root_dir, split, split_ratio=1.0, img_size=512):
+        print("==> Initializing PSR Dataset")
         self.root_dir = root_dir
         self.samples = []
 
@@ -65,6 +70,7 @@ class PSRDataset(Dataset):
 
         self.num_func_cat = len(self.func_cat)
         self.num_kr_cat = len(self.kr_cat)
+        self.max_objs = 128
 
         self.data_rng = np.random.RandomState(123)
         self.mean = np.array(PSR_MEAN, dtype=np.float32)[None, None, :]
@@ -76,9 +82,14 @@ class PSRDataset(Dataset):
         self.split_ratio = split_ratio
 
         self.padding = 127  # 31 for resnet/resdcn
+        self.down_ratio = 4
         self.img_size = {"h": img_size, "w": img_size}
+        self.fmap_size = {
+            "h": img_size // self.down_ratio,
+            "w": img_size // self.down_ratio,
+        }
+        self.gaussian_iou = 0.7
         self.rand_scales = np.arange(1, 1.4, 0.1)
-
         for sample_name in os.listdir(root_dir):
             sample_path = os.path.join(root_dir, sample_name)
             if os.path.isdir(sample_path):
@@ -86,9 +97,14 @@ class PSRDataset(Dataset):
 
         if 0 < split_ratio < 1:
             split_size = int(
-                np.clip(split_ratio * len(self.images), 1, len(self.images))
+                np.clip(split_ratio * len(self.samples), 1, len(self.samples))
             )
-            self.images = self.images[:split_size]
+            self.samples = self.samples[:split_size]
+
+        if split == "train":
+            print(f"load {len(self.samples)} samples for training")
+        elif split == "test":
+            print(f"load {len(self.samples)} samples for testing")
 
     def __len__(self):
         return len(self.samples)
@@ -109,9 +125,10 @@ class PSRDataset(Dataset):
         root = int(relations.get("root", 0))  # Convert root to integer
         return relation_idx, root
 
-    def _process_image_and_masks(
-        self, sample_path, src_img, width, height, center, scale, flipped, trans_img
-    ):
+    def _process_image_and_masks(self, sample_path, src_img, flipped, trans_img):
+        height, width = src_img.shape[0], src_img.shape[1]
+        # center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
+        # scale = max(height, width) * 1.0
         # Apply flipping to src_img
         if flipped:
             src_img = src_img[:, ::-1, :]
@@ -131,8 +148,6 @@ class PSRDataset(Dataset):
 
         # Load and process individual masks
         masks_dir = sample_path
-        origin_mask_width = 640
-        origin_mask_height = 480
         masks_bbox = {}
         if os.path.exists(masks_dir):
             all_contours = []
@@ -251,23 +266,21 @@ class PSRDataset(Dataset):
         masked_img, masks_bbox = self._process_image_and_masks(
             sample_path,
             src_img.copy(),
-            width,
-            height,
-            center,
-            scale,
             flipped,
             trans_img,
         )
 
         masks_cat = {}
         kr = []
+
+        # Initialize all the masks_cat
+        for mask_idx in range(len(config["part center"])):
+            masks_cat[f"mask{mask_idx}"] = {}
+            for cat_idx in range(self.num_func_cat):
+                masks_cat[f"mask{mask_idx}"][cat_idx] = 0
+
         # assign category index to each mask
         for pair_relation in config["kinematic relation"]:
-            if pair_relation[0] not in masks_cat:
-                masks_cat[pair_relation[0]] = {}
-            if pair_relation[1] not in masks_cat:
-                masks_cat[pair_relation[1]] = {}
-
             part0_cat_str_list = pair_relation[2]["part0_function"]
             for cat_str in part0_cat_str_list:
                 part0_cat_idx = self.func_cat_ids.get(cat_str, 0)
@@ -292,41 +305,248 @@ class PSRDataset(Dataset):
                 else:
                     kr.append([pair_relation[0], pair_relation[1], relation_idx])
 
+        # get gt for training
+        img = masked_img[:3, :, :]  # Extract RGB channels only
+        new_center = np.array([0, 0], dtype=np.float32)
+
+        hmap = np.zeros(
+            (self.num_func_cat, self.fmap_size["h"], self.fmap_size["w"]),
+            dtype=np.float32,
+        )  # heatmap
+        w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
+        regs = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
+        inds = np.zeros((self.max_objs,), dtype=np.int64)
+        ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
+        obj_idx = 0
+        for mask_name, cat_dict in masks_cat.items():
+            # Get bbox info for this mask
+            bbox_info = masks_bbox[mask_name]
+            center = bbox_info["center"]  # [x, y] in image space
+            # print(center)
+            scale = bbox_info["scale"]  # [w, h] in image space
+
+            # Transform center to feature map space
+            center_fmap = [
+                center[0] / self.down_ratio,
+                float(center[1] / self.down_ratio),
+            ]
+            center_fmap = np.array(center_fmap, dtype=np.float32)
+            center_int = center_fmap.astype(np.int32)
+            # print(center_int)
+
+            w, h = scale
+
+            for cat_idx in cat_dict:  # cat_idx is the category index
+                if cat_dict[cat_idx] == 0:
+                    continue
+                # For each category this mask belongs to, draw a heatmap
+                radius = max(
+                    0,
+                    int(
+                        gaussian_radius((math.ceil(h), math.ceil(w)), self.gaussian_iou)
+                    ),
+                )
+                # print(radius)
+                draw_umich_gaussian(hmap[cat_idx], center_int, radius, 1)
+
+            if obj_idx < self.max_objs:
+                w_h_[obj_idx] = [w, h]
+                regs[obj_idx] = center_fmap - center_int
+                # print(regs[obj_idx])
+                inds[obj_idx] = center_int[1] * self.fmap_size["w"] + center_int[0]
+                ind_masks[obj_idx] = 1
+                obj_idx += 1
+        # TODO: raf:
+        raf_field = torch.rand(
+            self.num_kr_cat * 2, self.fmap_size["h"], self.fmap_size["w"]
+        )
+        raf_weights = torch.rand(
+            self.num_kr_cat * 2, self.fmap_size["h"], self.fmap_size["w"]
+        )
+
+        # concatenate all the masks for batch loading
+        for mask_idx in range(len(config["part center"]), self.max_objs):
+            masks_cat[f"mask{mask_idx}"] = {}
+            for cat_idx in range(self.num_func_cat):
+                masks_cat[f"mask{mask_idx}"][cat_idx] = 0
+
+        # concatenate all the masks_bbox for batch loading
+        for mask_idx in range(len(config["part center"]), self.max_objs):
+            masks_bbox[f"mask{mask_idx}"] = {}
+            masks_bbox[f"mask{mask_idx}"]["center"] = [0, 0]
+            masks_bbox[f"mask{mask_idx}"]["scale"] = [0, 0]
+
         return {
             "masked_img": masked_img,
             "masks_cat": masks_cat,
             "masks_bbox": masks_bbox,
-            "kinematic_relation": kr,
+            # "kinematic_relation": kr,  # need align
+            "hmap": hmap,
+            "w_h_": w_h_,
+            "regs": regs,
+            "inds": inds,
+            "ind_masks": ind_masks,
+            "raf": {"gt_relations": raf_field, "gt_relations_weights": raf_weights},
         }
 
 
-# masked_img: [4, 512, 512]
-# three RGB channel and one mask channel
+"""
+masked_img: [4, 512, 512]
+three RGB channel and one mask channel
 
-# masks_cat structure:
-# {
-#   "mask0": {
-#     cat1: number of shot,
-#     cat2: number of shot,
-#     ...
-#   },
-#   "mask1": {
-#     ...
-#   },
-#   ...
-# }
+masks_cat structure:
+{
+  "mask0": {
+    cat1: number of shot,
+    cat2: number of shot,
+    ...
+  },
+  "mask1": {
+    ...
+  },
+  ...
+}
 
-# masks_bbox structure:
-# {
-#   "mask0": {
-#     "center": [x, y],
-#     "scale": [w, h]
-#   },
-#   ...
-# }
+masks_bbox structure:
+{
+  "mask0": {
+    "center": [x, y],
+    "scale": [w, h]
+  },
+  ...
+}
 
-# kr structure: [
-#   [part1, part2, relation_idx],
-#   [part2, part3, relation_idx],
-#   ...
-# ]
+kr structure: [
+  [part1, part2, relation_idx],
+  [part2, part3, relation_idx],
+  ...
+]
+"""
+
+
+class PSR_eval(PSRDataset):
+    def __init__(
+        self, root_dir, split, test_scales=(1,), test_flip=False, fix_size=False
+    ):
+        super(PSR_eval, self).__init__(root_dir, split)
+        self.test_flip = test_flip
+        self.test_scales = test_scales
+        self.fix_size = fix_size
+
+    def __getitem__(self, idx):
+        sample_path = self.samples[idx]
+        # Load config.json
+        config_path = os.path.join(sample_path, "config.json")
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        # Load src_img.png
+        src_img_path = os.path.join(sample_path, "src_img.png")
+        image = cv2.imread(src_img_path)
+        height, width = image.shape[0:2]
+
+        out = {}
+        for scale in self.test_scales:
+            new_height = int(height * scale)
+            new_width = int(width * scale)
+
+            if self.fix_size:
+                img_height, img_width = self.img_size["h"], self.img_size["w"]
+                center = np.array([new_width / 2.0, new_height / 2.0], dtype=np.float32)
+                scaled_size = max(height, width) * 1.0
+                scaled_size = np.array([scaled_size, scaled_size], dtype=np.float32)
+            else:
+                img_height = (new_height | self.padding) + 1
+                img_width = (new_width | self.padding) + 1
+                center = np.array([new_width // 2, new_height // 2], dtype=np.float32)
+                scaled_size = np.array([img_width, img_height], dtype=np.float32)
+
+            img = cv2.resize(image, (new_width, new_height))
+            trans_img = get_affine_transform(
+                center, scaled_size, 0, [img_width, img_height]
+            )
+            img = cv2.warpAffine(img, trans_img, (img_width, img_height))
+
+            # Process masks for evaluation
+            combined_masks_channel = np.zeros((img_height, img_width), dtype=np.uint8)
+            masks_dir = sample_path
+            if os.path.exists(masks_dir):
+                for mask_filename in os.listdir(masks_dir):
+                    if mask_filename.startswith("mask"):
+                        mask_path = os.path.join(masks_dir, mask_filename)
+                        mask = Image.open(mask_path).convert("L")
+                        mask = mask.resize((width, height), Image.BILINEAR)
+                        mask = np.asarray(mask)
+
+                        mask = cv2.resize(mask, (new_width, new_height))
+                        mask = cv2.warpAffine(
+                            mask,
+                            trans_img,
+                            (img_width, img_height),
+                            flags=cv2.INTER_LINEAR,
+                        )
+                        mask_binary = (mask > 0).astype(np.uint8) * 255
+                        combined_masks_channel = np.maximum(
+                            combined_masks_channel, mask_binary
+                        )
+
+            img = img.astype(np.float32) / 255.0
+            combined_masks_channel = combined_masks_channel.astype(np.float32) / 255.0
+
+            masked_img = np.concatenate(
+                (img, combined_masks_channel[:, :, np.newaxis]), axis=2
+            )
+
+            # Normalize and transpose
+            extended_mean = np.concatenate(
+                (self.mean, np.array([0.0], dtype=np.float32)[None, None, :]), axis=2
+            )
+            extended_std = np.concatenate(
+                (self.std, np.array([1.0], dtype=np.float32)[None, None, :]), axis=2
+            )
+
+            masked_img -= extended_mean
+            masked_img /= extended_std
+            masked_img = masked_img.transpose(2, 0, 1)[None, :, :, :]
+
+            if self.test_flip:
+                masked_img = np.concatenate(
+                    (masked_img, masked_img[:, :, :, ::-1].copy()), axis=0
+                )
+
+            out[scale] = {
+                "image": masked_img,
+                "center": center,
+                "scale": scaled_size,
+                "fmap_h": img_height // self.down_ratio,
+                "fmap_w": img_width // self.down_ratio,
+            }
+
+        # Return sample_path as img_id for PSR dataset
+        return sample_path, out
+
+    def convert_eval_format(self, all_bboxes):
+        pass
+
+    def run_eval(self, results, save_dir=None):
+        pass
+
+    @staticmethod
+    def collate_fn(batch):
+        out = []
+        for img_id, sample in batch:
+            out.append(
+                (
+                    img_id,
+                    {
+                        s: {
+                            k: torch.from_numpy(sample[s][k]).float()
+                            if k == "image"
+                            else np.array(sample[s][k])
+                            for k in sample[s]
+                        }
+                        for s in sample
+                    },
+                )
+            )
+        return out
