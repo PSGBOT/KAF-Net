@@ -26,48 +26,60 @@ def visualize_dataset(root_dir, img_size=512):
         unnormalized_masked_img = masked_img.transpose(1, 2, 0)
 
         # Visualize each channel
-        fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-        titles = ["Red Channel", "Green Channel", "Blue Channel", "Mask Channel"]
+        fig, axes = plt.subplots(1, 5, figsize=(16, 4))
+        titles = [
+            "Red Channel",
+            "Green Channel",
+            "Blue Channel",
+            "Mask Channel",
+            "Door Hmap Channel",
+        ]
 
-        for channel_idx in range(4):
+        for channel_idx in range(5):
             ax = axes[channel_idx]
-            # Display each channel as grayscale
-            ax.imshow(unnormalized_masked_img[:, :, channel_idx], cmap="gray")
-            ax.set_title(titles[channel_idx])
-            ax.axis("off")
+            if channel_idx <= 3:
+                # Display each channel as grayscale
+                ax.imshow(unnormalized_masked_img[:, :, channel_idx], cmap="gray")
+                ax.set_title(titles[channel_idx])
+                ax.axis("off")
 
-            # Spot the center point on the mask channel (channel_idx == 3)
-            if channel_idx == 3:  # Mask channel
-                part_centers = data["masks_bbox"]
-                for part_name, bbox in part_centers.items():
-                    # center_coords are (x, y)
-                    ax.scatter(
-                        bbox["center"][0],
-                        bbox["center"][1],
-                        color="red",
-                        marker="x",
-                        s=100,
-                        linewidths=2,
-                        label=part_name,
-                    )
-                    # Draw bounding box rectangle
-                    # bbox["scale"] is [width, height]
-                    # bbox["center"] is [x, y]
-                    width_bbox = bbox["scale"][0]
-                    height_bbox = bbox["scale"][1]
-                    x_min = bbox["center"][0] - width_bbox / 2
-                    y_min = bbox["center"][1] - height_bbox / 2
+                # Spot the center point on the mask channel (channel_idx == 3)
+                if channel_idx == 3:  # Mask channel
+                    part_centers = data["masks_bbox"]
+                    for part_name, bbox in part_centers.items():
+                        # center_coords are (x, y)
+                        ax.scatter(
+                            bbox["center"][0],
+                            bbox["center"][1],
+                            color="red",
+                            marker="x",
+                            s=100,
+                            linewidths=2,
+                            label=part_name,
+                        )
+                        # Draw bounding box rectangle
+                        # bbox["scale"] is [width, height]
+                        # bbox["center"] is [x, y]
+                        width_bbox = bbox["scale"][0]
+                        height_bbox = bbox["scale"][1]
+                        x_min = bbox["center"][0] - width_bbox / 2
+                        y_min = bbox["center"][1] - height_bbox / 2
 
-                    rect = plt.Rectangle(
-                        (x_min, y_min),
-                        width_bbox,
-                        height_bbox,
-                        linewidth=1,
-                        edgecolor="cyan",
-                        facecolor="none",
-                    )
-                    ax.add_patch(rect)
-                ax.legend()  # Show legend for part names
+                        rect = plt.Rectangle(
+                            (x_min, y_min),
+                            width_bbox,
+                            height_bbox,
+                            linewidth=1,
+                            edgecolor="cyan",
+                            facecolor="none",
+                        )
+                        ax.add_patch(rect)
+                    ax.legend()  # Show legend for part names
+            elif channel_idx == 4:  # Mask channel
+                print(data["hmap"].shape)
+                ax.imshow(data["hmap"][0][11], cmap="gray")
+                ax.set_title(titles[channel_idx])
+                ax.axis("off")
 
         plt.suptitle(f"Masked Image {i + 1} - Channel by Channel")
         plt.tight_layout(
