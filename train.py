@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
 
 import numpy as np
 
-from datasets.coco import COCO, COCO_eval
-from datasets.pascal import PascalVOC, PascalVOC_eval
+# from datasets.coco import COCO, COCO_eval
+# from datasets.pascal import PascalVOC, PascalVOC_eval
 from datasets.psr import PSRDataset
 from nets.raf_loss import _raf_loss
 from nets.hourglass import get_hourglass
@@ -39,7 +39,7 @@ parser.add_argument("--data_dir", type=str, default="./data")
 parser.add_argument("--log_name", type=str, default="test")
 parser.add_argument("--pretrain_name", type=str, default="pretrain")
 
-parser.add_argument("--dataset", type=str, default="coco", choices=["coco", "pascal"])
+parser.add_argument("--dataset", type=str)
 parser.add_argument("--arch", type=str, default="large_hourglass")
 
 parser.add_argument("--img_size", type=int, default=512)
@@ -70,6 +70,17 @@ os.makedirs(cfg.log_dir, exist_ok=True)
 os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
 cfg.lr_step = [int(s) for s in cfg.lr_step.split(",")]
+
+
+def to_device(batch, device):
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device=device, non_blocking=True)
+    elif isinstance(batch, dict):
+        return {k: to_device(v, device) for k, v in batch.items()}
+    elif isinstance(batch, list):
+        return [to_device(v, device) for v in batch]
+    else:
+        return batch  # skip non-tensor types
 
 
 def main():
@@ -116,17 +127,17 @@ def main():
         drop_last=True,
         sampler=train_sampler if cfg.dist else None,
     )
-    # not implemented for now
-    Dataset_eval = COCO_eval if cfg.dataset == "coco" else PascalVOC_eval
-    val_dataset = Dataset_eval(cfg.data_dir, "val", test_scales=[1.0], test_flip=False)
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=1,
-        shuffle=False,
-        num_workers=1,
-        pin_memory=True,
-        collate_fn=val_dataset.collate_fn,
-    )
+    # TODO: dataset for eval
+    # Dataset_eval = COCO_eval if cfg.dataset == "coco" else PascalVOC_eval
+    # val_dataset = Dataset_eval(cfg.data_dir, "val", test_scales=[1.0], test_flip=False)
+    # val_loader = torch.utils.data.DataLoader(
+    #     val_dataset,
+    #     batch_size=1,
+    #     shuffle=False,
+    #     num_workers=1,
+    #     pin_memory=True,
+    #     collate_fn=val_dataset.collate_fn,
+    # )
 
     print("Creating model...")
     if "hourglass" in cfg.arch:
@@ -170,19 +181,20 @@ def main():
         for batch_idx, batch in enumerate(train_loader):
             for k in batch:
                 if k != "meta":
-                    batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
+                    batch[k] = to_device(batch[k], cfg.device)
+                    # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
-            outputs = model(batch["masked_image"])
-            hmap, regs, w_h_, raf = zip(*outputs)
-            
+            outputs = model(batch["masked_img"])
+            hmap, regs, w_h_ = zip(*outputs)
+
             regs = [_tranpose_and_gather_feature(r, batch["inds"]) for r in regs]
             w_h_ = [_tranpose_and_gather_feature(r, batch["inds"]) for r in w_h_]
 
             hmap_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
             w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
-            raf_loss = _raf_loss(raf, batch["raf"])
-            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
+            # raf_loss = _raf_loss(raf, batch["raf"])
+            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss  # + raf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -194,12 +206,13 @@ def main():
                 print(
                     "[%d/%d-%d/%d] "
                     % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
-                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
+                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f"
+                    # + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
                     % (
                         hmap_loss.item(),
                         reg_loss.item(),
                         w_h_loss.item(),
-                        raf_loss.item(),
+                        # raf_loss.item(),
                     )
                     + " (%d samples/sec)"
                     % (cfg.batch_size * cfg.log_interval / duration)
@@ -209,7 +222,7 @@ def main():
                 summary_writer.add_scalar("hmap_loss", hmap_loss.item(), step)
                 summary_writer.add_scalar("reg_loss", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss", w_h_loss.item(), step)
-                summary_writer.add_scalar("raf_loss", raf_loss.item(), step)
+                # summary_writer.add_scalar("raf_loss", raf_loss.item(), step)
         return
 
     def val_map(epoch):
