@@ -137,7 +137,7 @@ class exkp(nn.Module):
         curr_dim = dims[0]
 
         self.pre = nn.Sequential(
-            convolution(7, 4, 128, stride=2), residual(3, 128, curr_dim, stride=2)
+            convolution(7, 3, 128, stride=2), residual(3, 128, curr_dim, stride=2)
         )
 
         self.kps = nn.ModuleList([kp_module(n, dims, modules) for _ in range(nstack)])
@@ -207,18 +207,10 @@ class exkp(nn.Module):
 
 get_hourglass = {
     "large_hourglass": exkp(
-        n=5,
-        nstack=2,
-        dims=[256, 256, 384, 384, 384, 512],
-        modules=[2, 2, 2, 2, 2, 4],
-        num_classes=13,
+        n=5, nstack=2, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4]
     ),
     "small_hourglass": exkp(
-        n=5,
-        nstack=1,
-        dims=[256, 256, 384, 384, 384, 512],
-        modules=[2, 2, 2, 2, 2, 4],
-        num_classes=13,
+        n=5, nstack=1, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4]
     ),
 }
 
