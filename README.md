@@ -3,11 +3,11 @@
 If you are looking for another CenterNet, try [this](https://github.com/zzzxxxttt/pytorch_simple_CenterNet_47)!
 
 This repository is a simple pytorch implementation of [Objects as Points](https://arxiv.org/abs/1904.07850), some of the code is taken from the [official implementation](https://github.com/xingyizhou/CenterNet).
-As the name says, this version is **simple** and **easy to read**, all the complicated parts (dataloader, hourglass, training loop, etc) are all rewrote in a simpler way.    
+As the name says, this version is **simple** and **easy to read**, all the complicated parts (dataloader, hourglass, training loop, etc) are all rewrote in a simpler way.
 By the way the support of **nn.parallel.DistributedDataParallel** is also added, so this implementation trains significantly faster than the official code (~ **75 img/s** vs ~36 img/s on 8 GPUs).
 
-Enjoy!     
- 
+Enjoy!
+
 ## Requirements:
 - python>=3.5
 - pytorch==0.4.1 or 1.1.0 (DistributedDataParallel training only available using 1.1.0)
@@ -50,18 +50,17 @@ Open `torch/nn/functional.py` and find the line with `torch.batch_norm` and repl
 8. To train Hourglass-104, download [CornerNet pretrained weights (password: y1z4)](https://pan.baidu.com/s/1tp9-5CAGwsX3VUSdV276Fg) and put ```checkpoint.t7``` into ```$CenterNet_ROOT/ckpt/pretrain```.
 
 
-## Train 
+## Train
 ### COCO
 #### single GPU or multi GPU using nn.DataParallel
 ```
-python train.py --log_name coco_hg_512_dp \
-                --dataset coco \
-                --arch large_hourglass \
+python train.py --log_name psr_hg_512_dp \                                    train
+                --data_dir dir_to_psr_dataset \
+                --arch fcsgg \
                 --lr 5e-4 \
                 --lr_step 90,120 \
-                --batch_size 48 \
-                --num_epochs 140 \  
-                --num_workers 10
+                --batch_size 4 \
+                --num_epochs 140 --num_workers 0 --log_interval 10
 ```
 #### multi GPU using nn.parallel.DistributedDataParallel
 ```
@@ -154,7 +153,7 @@ ResDCN-18 (DDP)|512|72.76/75.69|[password: s8d5](https://pan.baidu.com/s/1emMdi1
 ## Demo:
 ```
 python demo.py --img_dir ./demo.jpg \
-               --ckpt_dir ./ckpt/pascal_resdcn18_512/checkpoint.t7 \ 
+               --ckpt_dir ./ckpt/pascal_resdcn18_512/checkpoint.t7 \
                --dataset pascal \
                --arch resdcn_18 \
                --img_size 512 \
@@ -163,6 +162,5 @@ python demo.py --img_dir ./demo.jpg \
 **Demo results:**
 
 <img src="https://github.com/zzzxxxttt/pytorch_simple_CenterNet_45/blob/master/data/demo_results.png" width="500" />
-
 
 
