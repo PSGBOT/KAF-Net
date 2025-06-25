@@ -71,6 +71,7 @@ class PSRDataset(Dataset):
         self.num_func_cat = len(self.func_cat)
         self.num_kr_cat = len(self.kr_cat)
         self.max_objs = 128
+        self.max_rels = 512
 
         self.data_rng = np.random.RandomState(123)
         self.mean = np.array(PSR_MEAN, dtype=np.float32)[None, None, :]
@@ -376,11 +377,15 @@ class PSRDataset(Dataset):
             masks_bbox[f"mask{mask_idx}"]["center"] = [0, 0]
             masks_bbox[f"mask{mask_idx}"]["scale"] = [0, 0]
 
+        # concatenate all the kinematic relations for batch loading
+        for rel_idx in range(len(kr), self.max_rels):
+            kr.append(["", "", 13])
+
         return {
             "masked_img": masked_img,
             "masks_cat": masks_cat,
             "masks_bbox": masks_bbox,
-            # "kinematic_relation": kr,  # need align
+            "kinematic_relation": kr,
             "hmap": hmap,
             "w_h_": w_h_,
             "regs": regs,
