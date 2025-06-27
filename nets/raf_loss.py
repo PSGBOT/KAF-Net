@@ -26,6 +26,7 @@ def gaussian_focal_loss(pred, gaussian_target, alpha=2.0, gamma=4.0):
     pos_num = pos_weights.sum().clamp(min=1)
     return (pos_loss + neg_loss).sum() / pos_num
 
+
 def CB_loss_weights(samples_per_cls, beta):
     """Compute the Class Balanced Loss between `logits` and the ground truth `labels`.
 
@@ -53,13 +54,11 @@ def CB_loss_weights(samples_per_cls, beta):
 
 
 class RAFLoss(nn.Module):
-    def __init__(self,
-                 cos_similar=False,
-                 beta=0.999,
-                 reduction='mean',
-                 loss_weight=1.0):
+    def __init__(
+        self, cos_similar=False, beta=0.999, reduction="mean", loss_weight=1.0
+    ):
         super(RAFLoss, self).__init__()
-        self.raf_type = 'vector'  # 'vector' or 'point'
+        self.raf_type = "vector"  # 'vector' or 'point'
         self.cos_similar = cos_similar
         self.beta = beta
         self.reduction = reduction
@@ -92,9 +91,11 @@ class RAFLoss(nn.Module):
         # num = weights.gt(0).sum().clamp(min=1)
         num = weights.eq(1).sum().clamp(min=1)
         if weighted:
-            loss = self.loss_func(preds, targets, reduction='none') * weights
+            loss = self.loss_func(preds, targets, reduction="none") * weights
         else:
-            loss = self.loss_func(preds, targets, reduction='none') * (weights > 0).float()
+            loss = (
+                self.loss_func(preds, targets, reduction="none") * (weights > 0).float()
+            )
         if self.cos_similar:
             angle = torch.pow(-F.cosine_similarity(preds, targets, dim=2) + 2.0, 2)
             loss = loss * angle[:, :, None, ...]
@@ -103,40 +104,66 @@ class RAFLoss(nn.Module):
         return loss
 
     def forward(self, preds, targets):
-        gt_rafs = torch.stack([x.gt_relations for x in targets], dim=0)
-        # num_rels = max(sum([x.gt_num_relations for x in targets]), 1)
-        # preds may be of (B, P*2, h, w)
-        preds = preds.view_as(gt_rafs)
-        gt_raf_weights = torch.stack([x.gt_relations_weights for x in targets], dim=0)
-        if self.raf_type == "vector":
-            loss = self._reg_loss(preds, gt_rafs, gt_raf_weights, num=None)
-            loss = loss * self.loss_weight
+        gt_rafs = torch.stack([x["gt_relations"] for x in targets], dim=0)
+        gt_raf_weights = torch.stack(
+            [x["gt_relations_weights"] for x in targets], dim=0
+        )
+        total_loss = 0
+        for pred in preds:
+            # preds may be of (B, P*2, h, w)
+            pred = pred.view_as(gt_rafs)
+            if self.raf_type == "vector":
+                loss = self._reg_loss(pred, gt_rafs, gt_raf_weights, num=None)
+                loss = loss * self.loss_weight
 
-            # spatial weights (class-agnostic) on gt paths
-            # self.reg_area == "neg"
-            spatial_mask = gt_raf_weights.max(dim=1, keepdim=True).values != gt_raf_weights
-            loss += (F.l1_loss(preds, gt_rafs, reduction='none') * spatial_mask ).mean() * self.neg_loss_weight
+                # spatial weights (class-agnostic) on gt paths
+                # self.reg_area == "neg"
+                spatial_mask = (
+                    gt_raf_weights.max(dim=1, keepdim=True).values != gt_raf_weights
+                )
+                loss += (
+                    F.l1_loss(pred, gt_rafs, reduction="none") * spatial_mask
+                ).mean() * self.neg_loss_weight
 
-        elif self.raf_type == "point":
-            loss = gaussian_focal_loss(preds, gt_rafs)
-        else:
-            raise NotImplementedError()
-        return loss
-    
+            elif self.raf_type == "point":
+                loss = gaussian_focal_loss(pred, gt_rafs)
+            else:
+                raise NotImplementedError()
+            total_loss += loss
+        return total_loss / len(preds)
 
 
-def _raf_loss(rafs, gt_rafs):
-  ''' Raf loss. Exactly the same as fcsgg.
-      Arguments:
-        preds: (B x r*2 x h x w)
-        gt_rafs: a List[Dict] with B dicts:
-          { 
-          gt_relations: tensor (r*2 x h x w)
-          gt_relations_weights: tensor (r*2 x h x w)
-          }
-      Returns:
-        raf_loss: a scalar tensor
-  '''
-  raf_loss_evaluator = RAFLoss(cos_similar=False, beta=0.999, reduction='mean', loss_weight=1.0)
-  raf_loss = raf_loss_evaluator(rafs, gt_rafs)
-  return raf_loss
+def _raf_loss(rafs, gt_rafs, gt_raf_weights):
+    """Raf loss. Exactly the same as fcsgg.
+    Arguments:
+      preds: (B x r*2 x h x w)
+    Returns:
+      raf_loss: a scalar tensor
+    """
+    raf_loss_evaluator = RAFLoss(
+        cos_similar=False, beta=0.999, reduction="mean", loss_weight=1.0
+    )
+
+    # gt_rafs:[B, r, 2, 128,128] => [B, r*2, 128,128]
+    # Reshape to combine the predicate and vector component dimensions
+    B, R, C, H, W = gt_rafs.shape
+    gt_rafs = gt_rafs.reshape(B, R * C, H, W)
+
+    # gt_raf_weights:[B, r, 2, 128,128] => [B, r*2, 128,128]
+    # Reshape to combine the predicate and vector component dimensions
+    gt_raf_weights = gt_raf_weights.reshape(B, R * C, H, W)
+
+    """
+    gt_rafs: a List[Dict] with B dicts:
+    {
+        gt_relations: tensor (r*2 x h x w)
+        gt_relations_weights: tensor (r*2 x h x w)
+    }
+    """
+    gt = [
+        {"gt_relations": gt_raf, "gt_relations_weights": gt_weight}
+        for gt_raf, gt_weight in zip(gt_rafs, gt_raf_weights)
+    ]
+
+    raf_loss = raf_loss_evaluator(rafs, gt)
+    return raf_loss
