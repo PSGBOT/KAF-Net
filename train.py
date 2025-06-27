@@ -148,7 +148,7 @@ def main():
     elif "resdcn" in cfg.arch:
         model = get_pose_net(
             num_layers=int(cfg.arch.split("_")[-1]),
-            num_classes=train_dataset.num_classes,
+            num_classes=train_dataset.num_func_cat,
         )
     else:
         raise NotImplementedError
@@ -193,7 +193,9 @@ def main():
             hmap_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
             w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
-            # raf_loss = _raf_loss(raf, batch["raf"])
+            raf_loss = _raf_loss(
+                raf, batch["gt_relations"], batch["gt_relations_weights"]
+            )
             loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss  # + raf_loss
 
             optimizer.zero_grad()
@@ -206,13 +208,12 @@ def main():
                 print(
                     "[%d/%d-%d/%d] "
                     % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
-                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f"
-                    # + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
+                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
                     % (
                         hmap_loss.item(),
                         reg_loss.item(),
                         w_h_loss.item(),
-                        # raf_loss.item(),
+                        raf_loss.item(),
                     )
                     + " (%d samples/sec)"
                     % (cfg.batch_size * cfg.log_interval / duration)
@@ -222,7 +223,7 @@ def main():
                 summary_writer.add_scalar("hmap_loss", hmap_loss.item(), step)
                 summary_writer.add_scalar("reg_loss", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss", w_h_loss.item(), step)
-                # summary_writer.add_scalar("raf_loss", raf_loss.item(), step)
+                summary_writer.add_scalar("raf_loss", raf_loss.item(), step)
         return
 
     def val_map(epoch):

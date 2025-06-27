@@ -8,8 +8,8 @@ import numpy as np
 import cv2
 import math
 from utils.image import get_affine_transform, color_aug
-from utils.image import get_border, get_affine_transform, affine_transform, color_aug
 from utils.image import draw_umich_gaussian, gaussian_radius
+from datasets.utils.kaf_gen import get_kaf
 
 PSR_FUNC_CAT = [
     "other",
@@ -57,9 +57,14 @@ PSR_EIGEN_VECTORS = [
 ]
 
 
+def maskname_to_index(maskname="mask0"):
+    return int(maskname.split("mask")[1])
+
+
 class PSRDataset(Dataset):
     def __init__(self, root_dir, split, split_ratio=1.0, img_size=512):
         print("==> Initializing PSR Dataset")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.root_dir = root_dir
         self.samples = []
 
@@ -186,7 +191,9 @@ class PSRDataset(Dataset):
                     # get the center
                     mask_center = (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
 
-                    masks_bbox[os.path.splitext(mask_filename)[0]] = {
+                    masks_bbox[
+                        maskname_to_index(os.path.splitext(mask_filename)[0])
+                    ] = {
                         "center": mask_center,
                         "scale": [mask_width, mask_height],
                     }
@@ -276,39 +283,49 @@ class PSRDataset(Dataset):
 
         # Initialize all the masks_cat
         for mask_idx in range(len(config["part center"])):
-            masks_cat[f"mask{mask_idx}"] = {}
+            masks_cat[mask_idx] = {}
             for cat_idx in range(self.num_func_cat):
-                masks_cat[f"mask{mask_idx}"][cat_idx] = 0
+                masks_cat[mask_idx][cat_idx] = 0
 
         # assign category index to each mask
         for pair_relation in config["kinematic relation"]:
             part0_cat_str_list = pair_relation[2]["part0_function"]
             for cat_str in part0_cat_str_list:
                 part0_cat_idx = self.func_cat_ids.get(cat_str, 0)
-                if part0_cat_idx not in masks_cat[pair_relation[0]]:
-                    masks_cat[pair_relation[0]][part0_cat_idx] = 1
+                if part0_cat_idx not in masks_cat[maskname_to_index(pair_relation[0])]:
+                    masks_cat[maskname_to_index(pair_relation[0])][part0_cat_idx] = 1
                 else:
-                    masks_cat[pair_relation[0]][part0_cat_idx] += 1
+                    masks_cat[maskname_to_index(pair_relation[0])][part0_cat_idx] += 1
 
             part1_cat_str_list = pair_relation[2]["part1_function"]
             for cat_str in part1_cat_str_list:
                 part1_cat_idx = self.func_cat_ids.get(cat_str, 0)
-                if part1_cat_idx not in masks_cat[pair_relation[1]]:
-                    masks_cat[pair_relation[1]][part1_cat_idx] = 1
+                if part1_cat_idx not in masks_cat[maskname_to_index(pair_relation[1])]:
+                    masks_cat[maskname_to_index(pair_relation[1])][part1_cat_idx] = 1
                 else:
-                    masks_cat[pair_relation[1]][part1_cat_idx] += 1
+                    masks_cat[maskname_to_index(pair_relation[1])][part1_cat_idx] += 1
 
             kjs = pair_relation[2]["kinematic_joints"]
             for kj in kjs:
                 relation_idx, root = self._parse_relations(kj)
                 if root == 0:
-                    kr.append([pair_relation[1], pair_relation[0], relation_idx])
+                    kr.append(
+                        [
+                            maskname_to_index(pair_relation[1]),
+                            maskname_to_index(pair_relation[0]),
+                            relation_idx,
+                        ]
+                    )
                 else:
-                    kr.append([pair_relation[0], pair_relation[1], relation_idx])
+                    kr.append(
+                        [
+                            maskname_to_index(pair_relation[0]),
+                            maskname_to_index(pair_relation[1]),
+                            relation_idx,
+                        ]
+                    )
 
         # get gt for training
-        img = masked_img[:3, :, :]  # Extract RGB channels only
-        new_center = np.array([0, 0], dtype=np.float32)
 
         hmap = np.zeros(
             (self.num_func_cat, self.fmap_size["h"], self.fmap_size["w"]),
@@ -357,41 +374,63 @@ class PSRDataset(Dataset):
                 inds[obj_idx] = center_int[1] * self.fmap_size["w"] + center_int[0]
                 ind_masks[obj_idx] = 1
                 obj_idx += 1
-        # TODO: raf:
-        raf_field = torch.rand(
-            self.num_kr_cat * 2, self.fmap_size["h"], self.fmap_size["w"]
-        )
-        raf_weights = torch.rand(
-            self.num_kr_cat * 2, self.fmap_size["h"], self.fmap_size["w"]
+
+        gt_centers = np.zeros((len(masks_bbox), 2))
+        gt_wh = np.zeros((len(masks_bbox), 2))
+        for mask_idx in masks_bbox.keys():
+            gt_centers[mask_idx] = masks_bbox[mask_idx]["center"]
+            gt_wh[mask_idx] = masks_bbox[mask_idx]["scale"]
+        gt_centers = torch.tensor(gt_centers, device=self.device)
+        gt_wh = torch.tensor(gt_wh, device=self.device)
+        # generate kaf with gt relations and bbox
+        raf_field, raf_weights = get_kaf(
+            kr,
+            masks_bbox,
+            self.num_kr_cat,
+            self.down_ratio,
+            (self.fmap_size["h"], self.fmap_size["w"]),
         )
 
-        # concatenate all the masks for batch loading
+        # for batch loading
+
+        # extend the gt_wh from [m, 2] to [self.max_objs, 2]
+        gt_wh = torch.cat(
+            (
+                gt_wh,
+                torch.zeros((self.max_objs - len(gt_wh), 2), device=self.device),
+            )
+        )
+
+        # extend the gt_centers from [m, 2] to [self.max_objs, 2]
+        gt_centers = torch.cat(
+            (
+                gt_centers,
+                torch.zeros((self.max_objs - len(gt_centers), 2), device=self.device),
+            )
+        )
+
+        # concatenate all the masks_cat for batch loading
         for mask_idx in range(len(config["part center"]), self.max_objs):
-            masks_cat[f"mask{mask_idx}"] = {}
+            masks_cat[mask_idx] = {}
             for cat_idx in range(self.num_func_cat):
-                masks_cat[f"mask{mask_idx}"][cat_idx] = 0
-
-        # concatenate all the masks_bbox for batch loading
-        for mask_idx in range(len(config["part center"]), self.max_objs):
-            masks_bbox[f"mask{mask_idx}"] = {}
-            masks_bbox[f"mask{mask_idx}"]["center"] = [0, 0]
-            masks_bbox[f"mask{mask_idx}"]["scale"] = [0, 0]
+                masks_cat[mask_idx][cat_idx] = 0
 
         # concatenate all the kinematic relations for batch loading
         for rel_idx in range(len(kr), self.max_rels):
-            kr.append(["", "", 13])
+            kr.append([-1, -1, 13])
 
         return {
             "masked_img": masked_img,
             "masks_cat": masks_cat,
-            "masks_bbox": masks_bbox,
-            "kinematic_relation": kr,
+            "masks_bbox_wh": gt_wh.cpu(),
+            "masks_bbox_center": gt_centers.cpu(),
             "hmap": hmap,
             "w_h_": w_h_,
             "regs": regs,
             "inds": inds,
             "ind_masks": ind_masks,
-            "raf": {"gt_relations": raf_field, "gt_relations_weights": raf_weights},
+            "gt_relations": raf_field.cpu(),
+            "gt_relations_weights": raf_weights.cpu(),
         }
 
 
@@ -412,146 +451,16 @@ masks_cat structure:
   ...
 }
 
-masks_bbox structure:
-{
-  "mask0": {
-    "center": [x, y],
-    "scale": [w, h]
-  },
-  ...
-}
+masks_bbox_wh structure:
+[
+[w, h], # for mask 0
+[w, h], # for mask 1
+...
+]
 
 kr structure: [
-  [part1, part2, relation_idx],
-  [part2, part3, relation_idx],
+  ["mask0", "mask1", relation_idx],
+  ["mask0", "mask2", relation_idx],
   ...
 ]
 """
-
-
-class PSR_eval(PSRDataset):
-    def __init__(
-        self, root_dir, split, test_scales=(1,), test_flip=False, fix_size=False
-    ):
-        super(PSR_eval, self).__init__(root_dir, split)
-        self.test_flip = test_flip
-        self.test_scales = test_scales
-        self.fix_size = fix_size
-
-    def __getitem__(self, idx):
-        sample_path = self.samples[idx]
-        # Load config.json
-        config_path = os.path.join(sample_path, "config.json")
-        with open(config_path, "r") as f:
-            config = json.load(f)
-
-        # Load src_img.png
-        src_img_path = os.path.join(sample_path, "src_img.png")
-        image = cv2.imread(src_img_path)
-        height, width = image.shape[0:2]
-
-        out = {}
-        for scale in self.test_scales:
-            new_height = int(height * scale)
-            new_width = int(width * scale)
-
-            if self.fix_size:
-                img_height, img_width = self.img_size["h"], self.img_size["w"]
-                center = np.array([new_width / 2.0, new_height / 2.0], dtype=np.float32)
-                scaled_size = max(height, width) * 1.0
-                scaled_size = np.array([scaled_size, scaled_size], dtype=np.float32)
-            else:
-                img_height = (new_height | self.padding) + 1
-                img_width = (new_width | self.padding) + 1
-                center = np.array([new_width // 2, new_height // 2], dtype=np.float32)
-                scaled_size = np.array([img_width, img_height], dtype=np.float32)
-
-            img = cv2.resize(image, (new_width, new_height))
-            trans_img = get_affine_transform(
-                center, scaled_size, 0, [img_width, img_height]
-            )
-            img = cv2.warpAffine(img, trans_img, (img_width, img_height))
-
-            # Process masks for evaluation
-            combined_masks_channel = np.zeros((img_height, img_width), dtype=np.uint8)
-            masks_dir = sample_path
-            if os.path.exists(masks_dir):
-                for mask_filename in os.listdir(masks_dir):
-                    if mask_filename.startswith("mask"):
-                        mask_path = os.path.join(masks_dir, mask_filename)
-                        mask = Image.open(mask_path).convert("L")
-                        mask = mask.resize((width, height), Image.BILINEAR)
-                        mask = np.asarray(mask)
-
-                        mask = cv2.resize(mask, (new_width, new_height))
-                        mask = cv2.warpAffine(
-                            mask,
-                            trans_img,
-                            (img_width, img_height),
-                            flags=cv2.INTER_LINEAR,
-                        )
-                        mask_binary = (mask > 0).astype(np.uint8) * 255
-                        combined_masks_channel = np.maximum(
-                            combined_masks_channel, mask_binary
-                        )
-
-            img = img.astype(np.float32) / 255.0
-            combined_masks_channel = combined_masks_channel.astype(np.float32) / 255.0
-
-            masked_img = np.concatenate(
-                (img, combined_masks_channel[:, :, np.newaxis]), axis=2
-            )
-
-            # Normalize and transpose
-            extended_mean = np.concatenate(
-                (self.mean, np.array([0.0], dtype=np.float32)[None, None, :]), axis=2
-            )
-            extended_std = np.concatenate(
-                (self.std, np.array([1.0], dtype=np.float32)[None, None, :]), axis=2
-            )
-
-            masked_img -= extended_mean
-            masked_img /= extended_std
-            masked_img = masked_img.transpose(2, 0, 1)[None, :, :, :]
-
-            if self.test_flip:
-                masked_img = np.concatenate(
-                    (masked_img, masked_img[:, :, :, ::-1].copy()), axis=0
-                )
-
-            out[scale] = {
-                "image": masked_img,
-                "center": center,
-                "scale": scaled_size,
-                "fmap_h": img_height // self.down_ratio,
-                "fmap_w": img_width // self.down_ratio,
-            }
-
-        # Return sample_path as img_id for PSR dataset
-        return sample_path, out
-
-    def convert_eval_format(self, all_bboxes):
-        pass
-
-    def run_eval(self, results, save_dir=None):
-        pass
-
-    @staticmethod
-    def collate_fn(batch):
-        out = []
-        for img_id, sample in batch:
-            out.append(
-                (
-                    img_id,
-                    {
-                        s: {
-                            k: torch.from_numpy(sample[s][k]).float()
-                            if k == "image"
-                            else np.array(sample[s][k])
-                            for k in sample[s]
-                        }
-                        for s in sample
-                    },
-                )
-            )
-        return out
