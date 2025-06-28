@@ -1,6 +1,5 @@
 from torch.utils.data import Dataset
 import torch
-import torch.nn.functional as F
 import json
 import os
 from PIL import Image
@@ -383,13 +382,14 @@ class PSRDataset(Dataset):
         gt_centers = torch.tensor(gt_centers, device=self.device)
         gt_wh = torch.tensor(gt_wh, device=self.device)
         # generate kaf with gt relations and bbox
-        raf_field, raf_weights = get_kaf(
-            kr,
-            masks_bbox,
-            self.num_kr_cat,
-            self.down_ratio,
-            (self.fmap_size["h"], self.fmap_size["w"]),
-        )
+        with torch.no_grad():
+            raf_field, raf_weights = get_kaf(
+                kr,
+                masks_bbox,
+                self.num_kr_cat,
+                self.down_ratio,
+                (self.fmap_size["h"], self.fmap_size["w"]),
+            )
 
         # for batch loading
 

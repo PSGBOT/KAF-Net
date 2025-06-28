@@ -7,6 +7,7 @@ from fvcore.common.file_io import PathManager
 from PIL import Image
 
 
+@torch.no_grad()
 def get_oval_gaussian_radius(wh_tensor, min_overlap=0.7):
     """
     Return the two axis radius of the gaussian based on IOU min_overlap.
@@ -17,6 +18,7 @@ def get_oval_gaussian_radius(wh_tensor, min_overlap=0.7):
     return radius_a_b.long()
 
 
+@torch.no_grad()
 def gaussian2D(diameters, sigma_factor=6):
     num_instances = diameters.size(0)
     sigmas_x_y = diameters.float() / sigma_factor
@@ -42,6 +44,7 @@ def gaussian2D(diameters, sigma_factor=6):
     return guassian_masks
 
 
+@torch.no_grad()
 def get_kaf(
     gt_relations,
     gt_boxes,

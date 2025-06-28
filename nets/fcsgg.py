@@ -186,6 +186,8 @@ class fcsgg(nn.Module):
     # regression layers
     self.regs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2) for _ in range(nstack)])
     self.w_h_ = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2) for _ in range(nstack)])
+    # New: Stack for relation generation
+    self.rel_gen_stack = nn.ModuleList([make_layer(3, cnv_dim, cnv_dim, modules=1, layer=residual) for _ in range(nstack)])
     self.rafs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2*num_relations) for _ in range(nstack)])
     self.relu = nn.ReLU(inplace=True)
 
@@ -198,7 +200,10 @@ class fcsgg(nn.Module):
       cnv = self.cnvs[ind](kp)
 
       if self.training or ind == self.nstack - 1:
-        outs.append([self.hmap[ind](cnv), self.regs[ind](cnv), self.w_h_[ind](cnv), self.rafs[ind](cnv)])
+        raf_input = cnv
+        if ind == 1: # Apply the relation generation stack only for the second stack (index 1)
+            raf_input = self.rel_gen_stack[ind](cnv)
+        outs.append([self.hmap[ind](cnv), self.regs[ind](cnv), self.w_h_[ind](cnv), self.rafs[ind](raf_input)])
 
       if ind < self.nstack - 1:
         inter = self.inters_[ind](inter) + self.cnvs_[ind](cnv)
