@@ -17,6 +17,7 @@ from nets.raf_loss import _raf_loss
 from nets.hourglass import get_hourglass
 from nets.resdcn import get_pose_net
 from nets.fcsgg import get_fcsgg
+from nets.dcn_kaf import get_kaf_net
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -84,6 +85,10 @@ def to_device(batch, device):
 
 
 def main():
+    import torch.multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
+
     saver = create_saver(cfg.local_rank, save_dir=cfg.ckpt_dir)
     logger = create_logger(cfg.local_rank, save_dir=cfg.log_dir)
     summary_writer = create_summary(cfg.local_rank, log_dir=cfg.log_dir)
@@ -146,9 +151,10 @@ def main():
     elif "fcsgg" in cfg.arch:
         model = get_fcsgg[cfg.arch]
     elif "resdcn" in cfg.arch:
-        model = get_pose_net(
+        model = get_kaf_net(
             num_layers=int(cfg.arch.split("_")[-1]),
             num_classes=train_dataset.num_func_cat,
+            num_rel=train_dataset.num_kr_cat,
         )
     else:
         raise NotImplementedError
@@ -185,10 +191,15 @@ def main():
                     # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
             outputs = model(batch["masked_img"])
-            hmap, regs, w_h_, raf = zip(*outputs)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            hmap = outputs[:][0]
+            regs = outputs[:][1]
+            w_h_ = outputs[:][2]
+            raf = outputs[:][3]
 
-            regs = [_tranpose_and_gather_feature(r, batch["inds"]) for r in regs]
-            w_h_ = [_tranpose_and_gather_feature(r, batch["inds"]) for r in w_h_]
+            regs = _tranpose_and_gather_feature(regs, batch["inds"])
+            w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
 
             hmap_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
@@ -196,7 +207,7 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss  # + raf_loss
+            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
 
             optimizer.zero_grad()
             loss.backward()

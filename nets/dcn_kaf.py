@@ -140,7 +140,7 @@ class KAFResDCN(nn.Module):
             self.raf = nn.Sequential(
                 nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(head_conv, num_rel, kernel_size=1, bias=True),
+                nn.Conv2d(head_conv, num_rel * 2, kernel_size=1, bias=True),
             )
             self.raf[-1].bias.data.fill_(-2.19)
             # regression layers
@@ -157,7 +157,7 @@ class KAFResDCN(nn.Module):
         else:
             # heatmap layers
             self.hmap = nn.Conv2d(64, num_classes, kernel_size=1, bias=True)
-            self.raf = nn.Conv2d(64, num_rel, kernel_size=1, bias=True)
+            self.raf = nn.Conv2d(64, num_rel * 2, kernel_size=1, bias=True)
             # regression layers
             self.regs = nn.Conv2d(64, 2, kernel_size=1, bias=True)
             self.w_h_ = nn.Conv2d(64, 2, kernel_size=1, bias=True)
@@ -258,7 +258,7 @@ class KAFResDCN(nn.Module):
         x = self.layer4(x)
 
         x = self.deconv_layers(x)
-        out = [[self.hmap(x), self.regs(x), self.w_h_(x), self.raf(x)]]
+        out = [self.hmap(x), self.regs(x), self.w_h_(x), self.raf(x)]
         return out
 
     def init_weights(self, num_layers):
@@ -301,7 +301,8 @@ if __name__ == "__main__":
     with torch.no_grad():
         y = net(torch.randn(4, 4, 512, 512).cuda())
         print("Result dimensions")
-        print((y[0][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
-        print((y[0][1].cpu().numpy()).shape)  # reg [2,2,128,128]
-        print((y[0][2].cpu().numpy()).shape)  # wh [2,2,128,128]
-        print((y[0][3].cpu().numpy()).shape)  # raf [2,14,128,128]
+        print(type(y[0]))
+        print((y[:][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
+        print((y[:][1].cpu().numpy()).shape)  # reg [2,2,128,128]
+        print((y[:][2].cpu().numpy()).shape)  # wh [2,2,128,128]
+        print((y[:][3].cpu().numpy()).shape)  # raf [2,14,128,128]
