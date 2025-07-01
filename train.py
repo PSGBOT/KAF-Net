@@ -189,7 +189,8 @@ def main():
                     # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
             outputs = model(batch["masked_img"])
-            hmap = [outputs[i][0] for i in range(len(outputs))]
+            # hmap = [outputs[i][0] for i in range(len(outputs))]
+            hmap = [outputs[-1][0]]
             regs = outputs[-1][1]
             w_h_ = outputs[-1][2]
             raf = outputs[-1][3]
@@ -197,7 +198,7 @@ def main():
             regs = _tranpose_and_gather_feature(regs, batch["inds"])
             w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
 
-            hmap_loss = _neg_loss(hmap, batch["hmap"])
+            hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
             w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
             raf_loss = _raf_loss(
@@ -217,7 +218,7 @@ def main():
                     % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
                     + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
                     % (
-                        hmap_loss.item(),
+                        hmap_final_loss.item(),
                         reg_loss.item(),
                         w_h_loss.item(),
                         raf_loss.item(),
@@ -227,7 +228,7 @@ def main():
                 )
 
                 step = len(train_loader) * epoch + batch_idx
-                summary_writer.add_scalar("hmap_loss", hmap_loss.item(), step)
+                summary_writer.add_scalar("hmap_loss", hmap_final_loss.item(), step)
                 summary_writer.add_scalar("reg_loss", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss", w_h_loss.item(), step)
                 summary_writer.add_scalar("raf_loss", raf_loss.item(), step)

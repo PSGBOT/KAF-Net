@@ -42,6 +42,7 @@ def _neg_loss(preds, targets):
     neg_weights = torch.pow(1 - targets, 4)
 
     loss = 0
+    final_loss = 0
     for pred in preds:
         pred = torch.clamp(torch.sigmoid(pred), min=1e-4, max=1 - 1e-4)
         pos_loss = torch.log(pred) * torch.pow(1 - pred, 2) * pos_inds
@@ -52,11 +53,13 @@ def _neg_loss(preds, targets):
         neg_loss = neg_loss.sum()
 
         if num_pos == 0:
-            loss = loss - neg_loss
+            loss += -neg_loss
+            final_loss = -neg_loss
         else:
-            loss = loss - (pos_loss + neg_loss) / num_pos
+            loss += -(pos_loss + neg_loss) / num_pos
+            final_loss = -(pos_loss + neg_loss) / num_pos
 
-    return loss / len(preds)
+    return (loss / len(preds), final_loss)
 
 
 def _reg_loss(regs, gt_regs, mask):

@@ -112,7 +112,7 @@ def fill_fc_weights(layers):
 
 class KAF_ResDCN(nn.Module):
     def __init__(self, block, layers, head_conv, num_classes, num_rel):
-        self.inplanes = 64
+        self.in_channel = 64
         self.deconv_with_bias = False
         self.num_classes = num_classes
 
@@ -165,28 +165,30 @@ class KAF_ResDCN(nn.Module):
         fill_fc_weights(self.regs)
         fill_fc_weights(self.w_h_)
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, out_channel, blocks, stride=1):
         downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
+        if stride != 1 or self.in_channel != out_channel * block.expansion:
             downsample = nn.Sequential(
                 nn.Conv2d(
-                    self.inplanes,
-                    planes * block.expansion,
+                    self.in_channel,
+                    out_channel * block.expansion,
                     kernel_size=1,
                     stride=stride,
                     bias=False,
                 ),
-                nn.BatchNorm2d(planes * block.expansion, momentum=BN_MOMENTUM),
+                nn.BatchNorm2d(out_channel * block.expansion, momentum=BN_MOMENTUM),
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
-        self.inplanes = planes * block.expansion
+        layers.append(block(self.in_channel, out_channel, stride, downsample))
+        self.in_channel = out_channel * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+            layers.append(block(self.in_channel, out_channel))
         return nn.Sequential(*layers)
 
-    def _get_deconv_cfg(self, deconv_kernel, index):
+    def _get_deconv_cfg(self, deconv_kernel):
+        padding = 0
+        output_padding = 0
         if deconv_kernel == 4:
             padding = 1
             output_padding = 0
@@ -199,8 +201,8 @@ class KAF_ResDCN(nn.Module):
 
         return deconv_kernel, padding, output_padding
 
-    def _make_deconv_layer(self, num_layers, num_filters, num_kernels):
-        assert num_layers == len(num_filters), (
+    def _make_deconv_layer(self, num_layers, num_channels, num_kernels):
+        assert num_layers == len(num_channels), (
             "ERROR: num_deconv_layers is different len(num_deconv_filters)"
         )
         assert num_layers == len(num_kernels), (
@@ -209,12 +211,12 @@ class KAF_ResDCN(nn.Module):
 
         layers = []
         for i in range(num_layers):
-            kernel, padding, output_padding = self._get_deconv_cfg(num_kernels[i], i)
+            kernel, padding, output_padding = self._get_deconv_cfg(num_kernels[i])
 
-            planes = num_filters[i]
+            output_channel = num_channels[i]
             fc = DCN(
-                self.inplanes,
-                planes,
+                self.in_channel,
+                output_channel,
                 kernel_size=(3, 3),
                 stride=1,
                 padding=1,
@@ -226,8 +228,8 @@ class KAF_ResDCN(nn.Module):
             #         padding=1, dilation=1, bias=False)
             # fill_fc_weights(fc)
             up = nn.ConvTranspose2d(
-                in_channels=planes,
-                out_channels=planes,
+                in_channels=output_channel,
+                out_channels=output_channel,
                 kernel_size=kernel,
                 stride=2,
                 padding=padding,
@@ -237,12 +239,12 @@ class KAF_ResDCN(nn.Module):
             fill_up_weights(up)
 
             layers.append(fc)
-            layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
+            layers.append(nn.BatchNorm2d(output_channel, momentum=BN_MOMENTUM))
             layers.append(nn.ReLU(inplace=True))
             layers.append(up)
-            layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
+            layers.append(nn.BatchNorm2d(output_channel, momentum=BN_MOMENTUM))
             layers.append(nn.ReLU(inplace=True))
-            self.inplanes = planes
+            self.in_channel = output_channel
 
         return nn.Sequential(*layers)
 
@@ -253,11 +255,15 @@ class KAF_ResDCN(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
+        print(x.shape)
         x = self.layer2(x)
+        print(x.shape)
         x = self.layer3(x)
+        print(x.shape)
         x = self.layer4(x)
-
+        print(x.shape)
         x = self.deconv_layers(x)
+        print(x.shape)
         out = [self.hmap(x), self.regs(x), self.w_h_(x), self.raf(x)]
         return [out]
 
