@@ -111,9 +111,6 @@ class RAFLoss(nn.Module):
             [x["gt_relations_weights"] for x in targets], dim=0
         )
         total_loss = 0
-        # If preds is a list of tensors (e.g., from multiple outputs or per-sample predictions), stack them.
-        if isinstance(preds, (list, tuple)):
-            preds = preds[-1]
         # Ensure the prediction tensor has the same shape as the ground truth for view_as
         pred = preds.view_as(gt_rafs)
         if self.raf_type == "vector":

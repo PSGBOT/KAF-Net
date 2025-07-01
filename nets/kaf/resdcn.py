@@ -4,16 +4,8 @@ import torch.nn as nn
 import numpy as np
 
 from lib.DCNv2.dcn_v2 import DCN
-import torch.utils.model_zoo as model_zoo
 
 BN_MOMENTUM = 0.1
-model_urls = {
-    "resnet18": "https://download.pytorch.org/models/resnet18-5c106cde.pth",
-    "resnet34": "https://download.pytorch.org/models/resnet34-333f7ec4.pth",
-    "resnet50": "https://download.pytorch.org/models/resnet50-19c8e357.pth",
-    "resnet101": "https://download.pytorch.org/models/resnet101-5d3b4d8f.pth",
-    "resnet152": "https://download.pytorch.org/models/resnet152-b121ed2d.pth",
-}
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -118,14 +110,14 @@ def fill_fc_weights(layers):
                 nn.init.constant_(m.bias, 0)
 
 
-class PoseResNet(nn.Module):
-    def __init__(self, block, layers, head_conv, num_classes):
+class KAF_ResDCN(nn.Module):
+    def __init__(self, block, layers, head_conv, num_classes, num_rel):
         self.inplanes = 64
         self.deconv_with_bias = False
         self.num_classes = num_classes
 
-        super(PoseResNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        super(KAF_ResDCN, self).__init__()
+        self.conv1 = nn.Conv2d(4, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -145,6 +137,12 @@ class PoseResNet(nn.Module):
                 nn.Conv2d(head_conv, num_classes, kernel_size=1, bias=True),
             )
             self.hmap[-1].bias.data.fill_(-2.19)
+            self.raf = nn.Sequential(
+                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(head_conv, num_rel * 2, kernel_size=1, bias=True),
+            )
+            self.raf[-1].bias.data.fill_(-2.19)
             # regression layers
             self.regs = nn.Sequential(
                 nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
@@ -159,6 +157,7 @@ class PoseResNet(nn.Module):
         else:
             # heatmap layers
             self.hmap = nn.Conv2d(64, num_classes, kernel_size=1, bias=True)
+            self.raf = nn.Conv2d(64, num_rel * 2, kernel_size=1, bias=True)
             # regression layers
             self.regs = nn.Conv2d(64, 2, kernel_size=1, bias=True)
             self.w_h_ = nn.Conv2d(64, 2, kernel_size=1, bias=True)
@@ -259,14 +258,10 @@ class PoseResNet(nn.Module):
         x = self.layer4(x)
 
         x = self.deconv_layers(x)
-        out = [[self.hmap(x), self.regs(x), self.w_h_(x)]]
-        return out
+        out = [self.hmap(x), self.regs(x), self.w_h_(x), self.raf(x)]
+        return [out]
 
     def init_weights(self, num_layers):
-        url = model_urls["resnet{}".format(num_layers)]
-        pretrained_state_dict = model_zoo.load_url(url)
-        print("=> loading pretrained model {}".format(url))
-        self.load_state_dict(pretrained_state_dict, strict=False)
         print("=> init deconv weights from normal distribution")
         for name, m in self.deconv_layers.named_modules():
             if isinstance(m, nn.BatchNorm2d):
@@ -283,9 +278,9 @@ resnet_spec = {
 }
 
 
-def get_pose_net(num_layers, head_conv=64, num_classes=80, num_rel=14):
+def get_kaf_resdcn(num_layers, head_conv=64, num_classes=80, num_rel=14):
     block_class, layers = resnet_spec[num_layers]
-    model = PoseResNet(block_class, layers, head_conv, num_classes)
+    model = KAF_ResDCN(block_class, layers, head_conv, num_classes, num_rel)
     model.init_weights(num_layers)
     return model
 
@@ -297,23 +292,17 @@ if __name__ == "__main__":
         print(output.data.cpu().numpy().shape)
         # pass
 
-    net = get_pose_net(18, num_classes=80).cuda()
+    net = get_kaf_resdcn(50, num_classes=80).cuda()
 
-    # ckpt = torch.load('../ckpt/ctdet_pascal_resdcn18_384.pth')['state_dict']
-    # new_ckpt = OrderedDict()
-    # for k in ckpt:
-    #   new_ckpt[k.replace('hm', 'hmap').replace('wh', 'w_h_').replace('reg', 'regs')] = ckpt[k]
-    # torch.save(new_ckpt, '../ckpt/resdcn18_baseline/checkpoint.t7')
-    # net.load_state_dict(new_ckpt)
-
-    # count_parameters(net)
-    # count_flops(net, input_size=512)
     for m in net.modules():
         if isinstance(m, nn.Conv2d) or isinstance(m, DCN):
             m.register_forward_hook(hook)
 
     with torch.no_grad():
-        y = net(torch.randn(8, 3, 512, 512).cuda())
-        print((y[0][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
-        print((y[0][1].cpu().numpy()).shape)  # reg [2,2,128,128]
-        print((y[0][2].cpu().numpy()).shape)  # wh [2,2,128,128]
+        y = net(torch.randn(4, 4, 512, 512).cuda())
+        print("Result dimensions")
+        print(type(y[0]))
+        print((y[:][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
+        print((y[:][1].cpu().numpy()).shape)  # reg [2,2,128,128]
+        print((y[:][2].cpu().numpy()).shape)  # wh [2,2,128,128]
+        print((y[:][3].cpu().numpy()).shape)  # raf [2,14,128,128]

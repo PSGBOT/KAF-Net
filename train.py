@@ -14,10 +14,8 @@ import numpy as np
 # from datasets.pascal import PascalVOC, PascalVOC_eval
 from datasets.psr import PSRDataset
 from nets.raf_loss import _raf_loss
-from nets.hourglass import get_hourglass
-from nets.resdcn import get_pose_net
-from nets.fcsgg import get_fcsgg
-from nets.dcn_kaf import get_kaf_net
+from nets.kaf.resdcn import get_kaf_resdcn
+from nets.kaf.hourglass import get_kaf_hourglass
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -91,6 +89,9 @@ def main():
 
     saver = create_saver(cfg.local_rank, save_dir=cfg.ckpt_dir)
     logger = create_logger(cfg.local_rank, save_dir=cfg.log_dir)
+    # clear log dir
+    for f in os.listdir(cfg.log_dir):
+        os.remove(os.path.join(cfg.log_dir, f))
     summary_writer = create_summary(cfg.local_rank, log_dir=cfg.log_dir)
     print = logger.info
     print(cfg)
@@ -146,12 +147,9 @@ def main():
 
     print("Creating model...")
     if "hourglass" in cfg.arch:
-        model = get_hourglass[cfg.arch]
-    ## I add the model code to hourglass.py
-    elif "fcsgg" in cfg.arch:
-        model = get_fcsgg[cfg.arch]
+        model = get_kaf_hourglass[cfg.arch]
     elif "resdcn" in cfg.arch:
-        model = get_kaf_net(
+        model = get_kaf_resdcn(
             num_layers=int(cfg.arch.split("_")[-1]),
             num_classes=train_dataset.num_func_cat,
             num_rel=train_dataset.num_kr_cat,
@@ -191,12 +189,10 @@ def main():
                     # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
             outputs = model(batch["masked_img"])
-            if isinstance(outputs, tuple):
-                outputs = outputs[0]
-            hmap = outputs[:][0]
-            regs = outputs[:][1]
-            w_h_ = outputs[:][2]
-            raf = outputs[:][3]
+            hmap = [outputs[i][0] for i in range(len(outputs))]
+            regs = outputs[-1][1]
+            w_h_ = outputs[-1][2]
+            raf = outputs[-1][3]
 
             regs = _tranpose_and_gather_feature(regs, batch["inds"])
             w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
@@ -307,7 +303,7 @@ def main():
         # psr_eval is not implemented for now
         # if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
         #     val_map(epoch)
-        print(saver.save(model.module.state_dict(), "checkpoint"))
+        # print(saver.save(model.module.state_dict(), "checkpoint"))
         lr_scheduler.step(epoch)  # move to here after pytorch1.1.0
 
     summary_writer.close()

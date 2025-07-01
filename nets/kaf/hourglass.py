@@ -127,9 +127,11 @@ class kp_module(nn.Module):
         return up1 + up2
 
 
-class exkp(nn.Module):
-    def __init__(self, n, nstack, dims, modules, cnv_dim=256, num_classes=80):
-        super(exkp, self).__init__()
+class KAF_Hourglass(nn.Module):
+    def __init__(
+        self, n, nstack, dims, modules, cnv_dim=256, num_classes=13, num_relations=14
+    ):
+        super(KAF_Hourglass, self).__init__()
 
         self.nstack = nstack
         self.num_classes = num_classes
@@ -137,7 +139,7 @@ class exkp(nn.Module):
         curr_dim = dims[0]
 
         self.pre = nn.Sequential(
-            convolution(7, 3, 128, stride=2), residual(3, 128, curr_dim, stride=2)
+            convolution(7, 4, 128, stride=2), residual(3, 128, curr_dim, stride=2)
         )
 
         self.kps = nn.ModuleList([kp_module(n, dims, modules) for _ in range(nstack)])
@@ -182,8 +184,14 @@ class exkp(nn.Module):
         self.w_h_ = nn.ModuleList(
             [make_kp_layer(cnv_dim, curr_dim, 2) for _ in range(nstack)]
         )
-
-        self.relu = nn.ReLU(inplace=True)
+        # New: Stack for relation generation
+        self.rel_gen_stack = nn.ModuleList(
+            [make_layer(3, cnv_dim, cnv_dim, modules=1, layer=residual)]
+        )
+        self.rafs = nn.ModuleList(
+            [make_kp_layer(cnv_dim, curr_dim, 2 * num_relations) for _ in range(nstack)]
+        )
+        self.relu = nn.ReLU(inplace=False)
 
     def forward(self, image):
         inter = self.pre(image)
@@ -194,43 +202,49 @@ class exkp(nn.Module):
             cnv = self.cnvs[ind](kp)
 
             if self.training or ind == self.nstack - 1:
+                raf_input = cnv
+                # Apply the relation generation stack only for the final stack
+                if ind == self.nstack - 1:
+                    raf_input = self.rel_gen_stack[0](cnv)
+
+                # always generate intermediate output
                 outs.append(
-                    [self.hmap[ind](cnv), self.regs[ind](cnv), self.w_h_[ind](cnv)]
+                    [
+                        self.hmap[ind](cnv),
+                        self.regs[ind](cnv),
+                        self.w_h_[ind](cnv),
+                        self.rafs[ind](raf_input),
+                    ]
                 )
 
-            if ind < self.nstack - 1:
+            if ind < self.nstack - 1:  # intermediate stage
                 inter = self.inters_[ind](inter) + self.cnvs_[ind](cnv)
                 inter = self.relu(inter)
                 inter = self.inters[ind](inter)
         return outs
 
 
-get_hourglass = {
-    "large_hourglass": exkp(
+get_kaf_hourglass = {
+    "hourglass_large": KAF_Hourglass(
         n=5, nstack=2, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4]
     ),
-    "small_hourglass": exkp(
+    "hourglass_small": KAF_Hourglass(
         n=5, nstack=1, dims=[256, 256, 384, 384, 384, 512], modules=[2, 2, 2, 2, 2, 4]
     ),
 }
 
 if __name__ == "__main__":
-    from collections import OrderedDict
-    from utils.utils import count_parameters, count_flops, load_model
 
     def hook(self, input, output):
         print(output.data.cpu().numpy().shape)
         # pass
 
-    net = get_hourglass["large_hourglass"]
-    load_model(net, "../ckpt/pretrain/checkpoint.t7")
-    count_parameters(net)
-    count_flops(net, input_size=512)
-
-    for m in net.modules():
-        if isinstance(m, nn.Conv2d):
-            m.register_forward_hook(hook)
+    net = get_kaf_hourglass["small_fcsgg"]
 
     with torch.no_grad():
-        y = net(torch.randn(2, 3, 512, 512).cuda())
-    # print(y.size())
+        y = net(torch.randn(2, 4, 512, 512).cuda())
+        print("Result dimensions")
+        print((y[0][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
+        print((y[0][1].cpu().numpy()).shape)  # reg [2,2,128,128]
+        print((y[0][2].cpu().numpy()).shape)  # wh [2,2,128,128]
+        print((y[0][3].cpu().numpy()).shape)  # raf [2,14,128,128]

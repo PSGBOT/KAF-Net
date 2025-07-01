@@ -33,8 +33,8 @@ def _neg_loss(preds, targets):
     """Modified focal loss. Exactly the same as CornerNet.
     Runs faster and costs a little bit more memory
     Arguments:
-    preds (B x c x h x w)
-    gt_regr (B x c x h x w)
+    preds ((multiple outputs) x B x c x h x w)
+    targets (B x c x h x w)
     """
     pos_inds = targets.eq(1).float()
     neg_inds = targets.lt(1).float()
@@ -55,6 +55,7 @@ def _neg_loss(preds, targets):
             loss = loss - neg_loss
         else:
             loss = loss - (pos_loss + neg_loss) / num_pos
+
     return loss / len(preds)
 
 
