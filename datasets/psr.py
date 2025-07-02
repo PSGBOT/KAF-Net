@@ -61,7 +61,14 @@ def maskname_to_index(maskname="mask0"):
 
 
 class PSRDataset(Dataset):
-    def __init__(self, root_dir, split, split_ratio=1.0, img_size=512):
+    def __init__(
+        self,
+        root_dir,
+        split,
+        split_ratio=1.0,
+        down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
+        img_size=512,
+    ):
         print("==> Initializing PSR Dataset")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.root_dir = root_dir
@@ -87,11 +94,23 @@ class PSRDataset(Dataset):
         self.split_ratio = split_ratio
 
         self.padding = 127  # 31 for resnet/resdcn
-        self.down_ratio = 4
+        self.down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
         self.img_size = {"h": img_size, "w": img_size}
-        self.fmap_size = {
-            "h": img_size // self.down_ratio,
-            "w": img_size // self.down_ratio,
+        self.hmap_size = {
+            "h": img_size // self.down_ratio["hmap"],
+            "w": img_size // self.down_ratio["hmap"],
+        }
+        self.offset_size = {
+            "h": img_size // self.down_ratio["reg"],
+            "w": img_size // self.down_ratio["reg"],
+        }
+        self.wh_size = {
+            "h": img_size // self.down_ratio["wh"],
+            "w": img_size // self.down_ratio["wh"],
+        }
+        self.kaf_size = {
+            "h": img_size // self.down_ratio["kaf"],
+            "w": img_size // self.down_ratio["kaf"],
         }
         self.gaussian_iou = 0.7
         self.rand_scales = np.arange(1, 1.4, 0.1)
@@ -327,12 +346,13 @@ class PSRDataset(Dataset):
         # get gt for training
 
         hmap = np.zeros(
-            (self.num_func_cat, self.fmap_size["h"], self.fmap_size["w"]),
+            (self.num_func_cat, self.hmap_size["h"], self.hmap_size["w"]),
             dtype=np.float32,
         )  # heatmap
         w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
         regs = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
-        inds = np.zeros((self.max_objs,), dtype=np.int64)
+        reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
+        wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
         ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
         obj_idx = 0
         for mask_name, cat_dict in masks_cat.items():
@@ -344,8 +364,8 @@ class PSRDataset(Dataset):
 
             # Transform center to feature map space
             center_fmap = [
-                center[0] / self.down_ratio,
-                float(center[1] / self.down_ratio),
+                float(center[0] / self.down_ratio["hmap"]),
+                float(center[1] / self.down_ratio["hmap"]),
             ]
             center_fmap = np.array(center_fmap, dtype=np.float32)
             center_int = center_fmap.astype(np.int32)
@@ -361,6 +381,7 @@ class PSRDataset(Dataset):
                     0,
                     int(
                         gaussian_radius((math.ceil(h), math.ceil(w)), self.gaussian_iou)
+                        / 4
                     ),
                 )
                 # print(radius)
@@ -370,7 +391,12 @@ class PSRDataset(Dataset):
                 w_h_[obj_idx] = [w, h]
                 regs[obj_idx] = center_fmap - center_int
                 # print(regs[obj_idx])
-                inds[obj_idx] = center_int[1] * self.fmap_size["w"] + center_int[0]
+                reg_inds[obj_idx] = (
+                    center_int[1] * self.offset_size["w"] + center_int[0]
+                ) * (self.down_ratio["hmap"] / self.down_ratio["reg"])
+                wh_inds[obj_idx] = (
+                    center_int[1] * self.wh_size["w"] + center_int[0]
+                ) * (self.down_ratio["hmap"] / self.down_ratio["wh"])
                 ind_masks[obj_idx] = 1
                 obj_idx += 1
 
@@ -387,8 +413,8 @@ class PSRDataset(Dataset):
                 kr,
                 masks_bbox,
                 self.num_kr_cat,
-                self.down_ratio,
-                (self.fmap_size["h"], self.fmap_size["w"]),
+                self.down_ratio["kaf"],
+                (self.kaf_size["h"], self.kaf_size["w"]),
             )
 
         # for batch loading
@@ -427,7 +453,7 @@ class PSRDataset(Dataset):
             "hmap": hmap,
             "w_h_": w_h_,
             "regs": regs,
-            "inds": inds,
+            "inds": reg_inds,
             "ind_masks": ind_masks,
             "gt_relations": raf_field.cpu(),
             "gt_relations_weights": raf_weights.cpu(),

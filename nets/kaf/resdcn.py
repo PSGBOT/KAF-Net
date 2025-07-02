@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 
 from lib.DCNv2.dcn_v2 import DCN
+from .fpn import get_fpn
 
 BN_MOMENTUM = 0.1
 
@@ -47,11 +48,11 @@ class BasicBlock(nn.Module):
         return out
 
 
-class Bottleneck(nn.Module):
+class ConvBottleneck(nn.Module):
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(Bottleneck, self).__init__()
+        super(ConvBottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.conv2 = nn.Conv2d(
@@ -89,6 +90,62 @@ class Bottleneck(nn.Module):
         return out
 
 
+class DeformBottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super(DeformBottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
+        # self.conv2 = nn.Conv2d(
+        #     out_channels,
+        #     out_channels,
+        #     kernel_size=3,
+        #     stride=stride,
+        #     padding=1,
+        #     bias=False,
+        # )
+        self.dcn2 = DCN(
+            out_channels,  # Changed from in_channels to out_channels
+            out_channels,
+            kernel_size=(3, 3),
+            stride=stride,
+            padding=1,
+            dilation=1,
+            deformable_groups=1,
+        )
+        self.bn2 = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
+        self.conv3 = nn.Conv2d(
+            out_channels, out_channels * self.expansion, kernel_size=1, bias=False
+        )
+        self.bn3 = nn.BatchNorm2d(out_channels * self.expansion, momentum=BN_MOMENTUM)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.dcn2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
 def fill_up_weights(up):
     w = up.weight.data
     f = math.ceil(w.size(2) / 2)
@@ -111,7 +168,7 @@ def fill_fc_weights(layers):
 
 
 class KAF_ResDCN(nn.Module):
-    def __init__(self, block, layers, head_conv, num_classes, num_rel):
+    def __init__(self, blocks, num_layers, head_conv, num_classes, num_rel):
         self.in_channel = 64
         self.deconv_with_bias = False
         self.num_classes = num_classes
@@ -121,36 +178,34 @@ class KAF_ResDCN(nn.Module):
         self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-
-        # used for deconv layers
-        self.deconv_layers = self._make_deconv_layer(3, [256, 128, 64], [4, 4, 4])
+        self.layer1 = self._make_layer(blocks[0], 64, num_layers[0])
+        self.layer2 = self._make_layer(blocks[0], 128, num_layers[1], stride=2)
+        self.layer3 = self._make_layer(blocks[1], 256, num_layers[2], stride=2)
+        self.layer4 = self._make_layer(blocks[1], 512, num_layers[3], stride=2)
+        self.fpn = get_fpn()
 
         if head_conv > 0:
             # heatmap layers
             self.hmap = nn.Sequential(
-                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, num_classes, kernel_size=1, bias=True),
             )
             self.hmap[-1].bias.data.fill_(-2.19)
             self.raf = nn.Sequential(
-                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, num_rel * 2, kernel_size=1, bias=True),
             )
             self.raf[-1].bias.data.fill_(-2.19)
             # regression layers
             self.regs = nn.Sequential(
-                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, 2, kernel_size=1, bias=True),
             )
             self.w_h_ = nn.Sequential(
-                nn.Conv2d(64, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, 2, kernel_size=1, bias=True),
             )
@@ -201,70 +256,18 @@ class KAF_ResDCN(nn.Module):
 
         return deconv_kernel, padding, output_padding
 
-    def _make_deconv_layer(self, num_layers, num_channels, num_kernels):
-        assert num_layers == len(num_channels), (
-            "ERROR: num_deconv_layers is different len(num_deconv_filters)"
-        )
-        assert num_layers == len(num_kernels), (
-            "ERROR: num_deconv_layers is different len(num_deconv_filters)"
-        )
-
-        layers = []
-        for i in range(num_layers):
-            kernel, padding, output_padding = self._get_deconv_cfg(num_kernels[i])
-
-            output_channel = num_channels[i]
-            fc = DCN(
-                self.in_channel,
-                output_channel,
-                kernel_size=(3, 3),
-                stride=1,
-                padding=1,
-                dilation=1,
-                deformable_groups=1,
-            )
-            # fc = nn.Conv2d(self.inplanes, planes,
-            #         kernel_size=3, stride=1,
-            #         padding=1, dilation=1, bias=False)
-            # fill_fc_weights(fc)
-            up = nn.ConvTranspose2d(
-                in_channels=output_channel,
-                out_channels=output_channel,
-                kernel_size=kernel,
-                stride=2,
-                padding=padding,
-                output_padding=output_padding,
-                bias=self.deconv_with_bias,
-            )
-            fill_up_weights(up)
-
-            layers.append(fc)
-            layers.append(nn.BatchNorm2d(output_channel, momentum=BN_MOMENTUM))
-            layers.append(nn.ReLU(inplace=True))
-            layers.append(up)
-            layers.append(nn.BatchNorm2d(output_channel, momentum=BN_MOMENTUM))
-            layers.append(nn.ReLU(inplace=True))
-            self.in_channel = output_channel
-
-        return nn.Sequential(*layers)
-
     def forward(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x = self.layer1(x)
-        print(x.shape)
-        x = self.layer2(x)
-        print(x.shape)
-        x = self.layer3(x)
-        print(x.shape)
-        x = self.layer4(x)
-        print(x.shape)
-        x = self.deconv_layers(x)
-        print(x.shape)
-        out = [self.hmap(x), self.regs(x), self.w_h_(x), self.raf(x)]
+        out1 = self.layer1(x)
+        out2 = self.layer2(out1)
+        out3 = self.layer3(out2)
+        out4 = self.layer4(out3)
+        p2, p3, p4, p5 = self.fpn([out1, out2, out3, out4])
+        out = [self.hmap(p5), self.regs(p4), self.w_h_(p3), self.raf(p2)]
         return [out]
 
     def init_weights(self, num_layers):
@@ -276,18 +279,31 @@ class KAF_ResDCN(nn.Module):
 
 
 resnet_spec = {
-    18: (BasicBlock, [2, 2, 2, 2]),
-    34: (BasicBlock, [3, 4, 6, 3]),
-    50: (Bottleneck, [3, 4, 6, 3]),
-    101: (Bottleneck, [3, 4, 23, 3]),
-    152: (Bottleneck, [3, 8, 36, 3]),
+    18: ([BasicBlock], [2, 2, 2, 2]),
+    34: ([BasicBlock], [3, 4, 6, 3]),
+    50: ([ConvBottleneck], [3, 4, 6, 3]),
+    101: ([ConvBottleneck], [3, 4, 23, 3]),
+    152: ([ConvBottleneck], [3, 8, 36, 3]),
+}
+
+resdcn_spec = {
+    50: ([ConvBottleneck, DeformBottleneck], [3, 4, 6, 3]),
+    101: ([ConvBottleneck, DeformBottleneck], [3, 4, 23, 3]),
+    152: ([ConvBottleneck, DeformBottleneck], [3, 8, 36, 3]),
 }
 
 
+def get_kaf_resnet(num_layers, head_conv=64, num_classes=80, num_rel=14):
+    block_classes, layers = resnet_spec[num_layers]
+    model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
+    # model.init_weights(num_layers) # Commented out as deconv_layers is not defined
+    return model
+
+
 def get_kaf_resdcn(num_layers, head_conv=64, num_classes=80, num_rel=14):
-    block_class, layers = resnet_spec[num_layers]
-    model = KAF_ResDCN(block_class, layers, head_conv, num_classes, num_rel)
-    model.init_weights(num_layers)
+    block_classes, layers = resdcn_spec[num_layers]
+    model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
+    # model.init_weights(num_layers) # Already commented out, keeping it that way
     return model
 
 
@@ -308,7 +324,7 @@ if __name__ == "__main__":
         y = net(torch.randn(4, 4, 512, 512).cuda())
         print("Result dimensions")
         print(type(y[0]))
-        print((y[:][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
-        print((y[:][1].cpu().numpy()).shape)  # reg [2,2,128,128]
-        print((y[:][2].cpu().numpy()).shape)  # wh [2,2,128,128]
-        print((y[:][3].cpu().numpy()).shape)  # raf [2,14,128,128]
+        print((y[0][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
+        print((y[0][1].cpu().numpy()).shape)  # reg [2,2,128,128]
+        print((y[0][2].cpu().numpy()).shape)  # wh [2,2,128,128]
+        print((y[0][3].cpu().numpy()).shape)  # raf [2,14,128,128]

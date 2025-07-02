@@ -117,9 +117,14 @@ def main():
     print("Setting up data...")
     # Dataset = COCO if cfg.dataset == "coco" else PascalVOC
     # onlt test psr dataset
+    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
     Dataset = PSRDataset
     train_dataset = Dataset(
-        cfg.data_dir, "train", split_ratio=cfg.split_ratio, img_size=cfg.img_size
+        cfg.data_dir,
+        "train",
+        split_ratio=cfg.split_ratio,
+        down_ratio=down_ratio,
+        img_size=cfg.img_size,
     )
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=num_gpus, rank=cfg.local_rank
@@ -189,6 +194,11 @@ def main():
                     # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
             outputs = model(batch["masked_img"])
+            # output shape:[
+            # [hmap, reg, w_h_, raf], # intermediate output
+            # ...
+            # [hmap(tensor[B,13,W,H]), reg(tensor[B,2,W,H]), w_h_(tensor[B,2,W,H]), raf(tensor[B,28,W,H])] # final output
+            # ]
             # hmap = [outputs[i][0] for i in range(len(outputs))]
             hmap = [outputs[-1][0]]
             regs = outputs[-1][1]

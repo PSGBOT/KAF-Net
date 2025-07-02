@@ -6,7 +6,10 @@ from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD, PSR_KR_CAT_IDX
 
 
 def visualize_dataset(root_dir, img_size=512):
-    dataset = PSRDataset(root_dir=root_dir, split="train", img_size=img_size)
+    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    dataset = PSRDataset(
+        root_dir=root_dir, split="train", down_ratio=down_ratio, img_size=img_size
+    )
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
     for i, data in enumerate(dataloader):
@@ -98,7 +101,7 @@ def visualize_dataset(root_dir, img_size=512):
             # Overlay center points from inds and regs on the heatmap
             for obj_idx in range(len(inds)):
                 if ind_masks[obj_idx] == 1:
-                    fmap_w = dataset.fmap_size["w"]
+                    fmap_w = dataset.hmap_size["w"]
                     center_fmap_x = inds[obj_idx] % fmap_w + regs[obj_idx, 0]
                     center_fmap_y = inds[obj_idx] // fmap_w + regs[obj_idx, 1]
                     ax.scatter(

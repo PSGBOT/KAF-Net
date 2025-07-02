@@ -4,9 +4,9 @@ from collections import OrderedDict
 
 
 def _gather_feature(feat, ind, mask=None):
-    dim = feat.size(2)
+    dim = feat.size(2)  # 2 for reg and wh
     ind = ind.unsqueeze(2).expand(ind.size(0), ind.size(1), dim)
-    feat = feat.gather(1, ind)
+    feat = feat.gather(1, ind)  # gather the data on the gt_detected point
     if mask is not None:
         mask = mask.unsqueeze(2).expand_as(feat)
         feat = feat[mask]

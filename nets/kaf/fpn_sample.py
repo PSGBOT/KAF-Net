@@ -113,10 +113,15 @@ class FPN(nn.Module):
         # Bottom-up
         c1 = F.relu(self.bn1(self.conv1(x)))
         c1 = F.max_pool2d(c1, kernel_size=3, stride=2, padding=1)
+        print(f"c1:{c1.shape}")
         c2 = self.layer1(c1)
+        print(f"c2:{c2.shape}")
         c3 = self.layer2(c2)
+        print(f"c3:{c3.shape}")
         c4 = self.layer3(c3)
+        print(f"c4:{c4.shape}")
         c5 = self.layer4(c4)
+        print(f"c5:{c5.shape}")
         # Top-down
         p5 = self.toplayer(c5)
         p4 = self._upsample_add(p5, self.latlayer1(c4))
@@ -126,6 +131,10 @@ class FPN(nn.Module):
         p4 = self.smooth1(p4)
         p3 = self.smooth2(p3)
         p2 = self.smooth3(p2)
+        print(f"p2:{p2.shape}")
+        print(f"p3:{p3.shape}")
+        print(f"p4:{p4.shape}")
+        print(f"p5:{p5.shape}")
         return p2, p3, p4, p5
 
 
@@ -136,7 +145,7 @@ def FPN101():
 
 def test():
     net = FPN101()
-    fms = net(Variable(torch.randn(1, 3, 600, 900)))
+    fms = net(Variable(torch.randn(1, 3, 512, 512)))
     for fm in fms:
         print(fm.size())
 
