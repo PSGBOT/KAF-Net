@@ -14,9 +14,8 @@ import numpy as np
 # from datasets.pascal import PascalVOC, PascalVOC_eval
 from datasets.psr import PSRDataset
 from nets.raf_loss import _raf_loss
-from nets.hourglass import get_hourglass
-from nets.resdcn import get_pose_net
-from nets.fcsgg import get_fcsgg
+from nets.kaf.resdcn import get_kaf_resdcn
+from nets.kaf.hourglass import get_kaf_hourglass
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -84,8 +83,15 @@ def to_device(batch, device):
 
 
 def main():
+    import torch.multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
+
     saver = create_saver(cfg.local_rank, save_dir=cfg.ckpt_dir)
     logger = create_logger(cfg.local_rank, save_dir=cfg.log_dir)
+    # clear log dir
+    for f in os.listdir(cfg.log_dir):
+        os.remove(os.path.join(cfg.log_dir, f))
     summary_writer = create_summary(cfg.local_rank, log_dir=cfg.log_dir)
     print = logger.info
     print(cfg)
@@ -111,9 +117,14 @@ def main():
     print("Setting up data...")
     # Dataset = COCO if cfg.dataset == "coco" else PascalVOC
     # onlt test psr dataset
+    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
     Dataset = PSRDataset
     train_dataset = Dataset(
-        cfg.data_dir, "train", split_ratio=cfg.split_ratio, img_size=cfg.img_size
+        cfg.data_dir,
+        "train",
+        split_ratio=cfg.split_ratio,
+        down_ratio=down_ratio,
+        img_size=cfg.img_size,
     )
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=num_gpus, rank=cfg.local_rank
@@ -141,14 +152,12 @@ def main():
 
     print("Creating model...")
     if "hourglass" in cfg.arch:
-        model = get_hourglass[cfg.arch]
-    ## I add the model code to hourglass.py
-    elif "fcsgg" in cfg.arch:
-        model = get_fcsgg[cfg.arch]
+        model = get_kaf_hourglass[cfg.arch]
     elif "resdcn" in cfg.arch:
-        model = get_pose_net(
+        model = get_kaf_resdcn(
             num_layers=int(cfg.arch.split("_")[-1]),
-            num_classes=train_dataset.num_classes,
+            num_classes=train_dataset.num_func_cat,
+            num_rel=train_dataset.num_kr_cat,
         )
     else:
         raise NotImplementedError
@@ -185,16 +194,27 @@ def main():
                     # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
 
             outputs = model(batch["masked_img"])
-            hmap, regs, w_h_, raf = zip(*outputs)
+            # output shape:[
+            # [hmap, reg, w_h_, raf], # intermediate output
+            # ...
+            # [hmap(tensor[B,13,W,H]), reg(tensor[B,2,W,H]), w_h_(tensor[B,2,W,H]), raf(tensor[B,28,W,H])] # final output
+            # ]
+            # hmap = [outputs[i][0] for i in range(len(outputs))]
+            hmap = [outputs[-1][0]]
+            regs = outputs[-1][1]
+            w_h_ = outputs[-1][2]
+            raf = outputs[-1][3]
 
-            regs = [_tranpose_and_gather_feature(r, batch["inds"]) for r in regs]
-            w_h_ = [_tranpose_and_gather_feature(r, batch["inds"]) for r in w_h_]
+            regs = _tranpose_and_gather_feature(regs, batch["inds"])
+            w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
 
-            hmap_loss = _neg_loss(hmap, batch["hmap"])
+            hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
             w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
-            # raf_loss = _raf_loss(raf, batch["raf"])
-            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss  # + raf_loss
+            raf_loss = _raf_loss(
+                raf, batch["gt_relations"], batch["gt_relations_weights"]
+            )
+            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -206,23 +226,22 @@ def main():
                 print(
                     "[%d/%d-%d/%d] "
                     % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
-                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f"
-                    # + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
+                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
                     % (
-                        hmap_loss.item(),
+                        hmap_final_loss.item(),
                         reg_loss.item(),
                         w_h_loss.item(),
-                        # raf_loss.item(),
+                        raf_loss.item(),
                     )
                     + " (%d samples/sec)"
                     % (cfg.batch_size * cfg.log_interval / duration)
                 )
 
                 step = len(train_loader) * epoch + batch_idx
-                summary_writer.add_scalar("hmap_loss", hmap_loss.item(), step)
+                summary_writer.add_scalar("hmap_loss", hmap_final_loss.item(), step)
                 summary_writer.add_scalar("reg_loss", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss", w_h_loss.item(), step)
-                # summary_writer.add_scalar("raf_loss", raf_loss.item(), step)
+                summary_writer.add_scalar("raf_loss", raf_loss.item(), step)
         return
 
     def val_map(epoch):
@@ -295,7 +314,7 @@ def main():
         # psr_eval is not implemented for now
         # if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
         #     val_map(epoch)
-        print(saver.save(model.module.state_dict(), "checkpoint"))
+        # print(saver.save(model.module.state_dict(), "checkpoint"))
         lr_scheduler.step(epoch)  # move to here after pytorch1.1.0
 
     summary_writer.close()
