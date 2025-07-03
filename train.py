@@ -205,8 +205,8 @@ def main():
             w_h_ = outputs[-1][2]
             raf = outputs[-1][3]
 
-            regs = _tranpose_and_gather_feature(regs, batch["inds"])
-            w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
+            regs = _tranpose_and_gather_feature(regs, batch["reg_inds"])
+            w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"])
 
             hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
