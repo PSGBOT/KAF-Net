@@ -6,7 +6,8 @@ from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD, PSR_KR_CAT_IDX
 
 
 def visualize_dataset(root_dir, img_size=512):
-    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    # down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    down_ratio = {"hmap": 32, "wh": 4, "reg": 4, "kaf": 4}
     dataset = PSRDataset(
         root_dir=root_dir, split="train", down_ratio=down_ratio, img_size=img_size
     )

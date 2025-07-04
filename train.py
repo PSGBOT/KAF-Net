@@ -115,9 +115,12 @@ def main():
         cfg.device = torch.device("cuda")
 
     print("Setting up data...")
-    # Dataset = COCO if cfg.dataset == "coco" else PascalVOC
-    # onlt test psr dataset
-    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    if "hourglass" in cfg.arch:
+        down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
+    elif "resdcn" in cfg.arch:
+        down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    else:
+        raise NotImplementedError
     Dataset = PSRDataset
     train_dataset = Dataset(
         cfg.data_dir,
@@ -314,7 +317,7 @@ def main():
         # psr_eval is not implemented for now
         # if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
         #     val_map(epoch)
-        # print(saver.save(model.module.state_dict(), "checkpoint"))
+        print(saver.save(model.module.state_dict(), "checkpoint"))
         lr_scheduler.step(epoch)  # move to here after pytorch1.1.0
 
     summary_writer.close()

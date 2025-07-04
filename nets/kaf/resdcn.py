@@ -293,14 +293,14 @@ resdcn_spec = {
 }
 
 
-def get_kaf_resnet(num_layers, head_conv=64, num_classes=80, num_rel=14):
+def get_kaf_resnet(num_layers, head_conv=64, num_classes=13, num_rel=14):
     block_classes, layers = resnet_spec[num_layers]
     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
     # model.init_weights(num_layers) # Commented out as deconv_layers is not defined
     return model
 
 
-def get_kaf_resdcn(num_layers, head_conv=64, num_classes=80, num_rel=14):
+def get_kaf_resdcn(num_layers, head_conv=64, num_classes=13, num_rel=14):
     block_classes, layers = resdcn_spec[num_layers]
     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
     # model.init_weights(num_layers) # Already commented out, keeping it that way
@@ -314,7 +314,7 @@ if __name__ == "__main__":
         print(output.data.cpu().numpy().shape)
         # pass
 
-    net = get_kaf_resdcn(50, num_classes=80).cuda()
+    net = get_kaf_resdcn(50).cuda()
 
     for m in net.modules():
         if isinstance(m, nn.Conv2d) or isinstance(m, DCN):

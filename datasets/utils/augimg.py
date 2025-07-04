@@ -9,25 +9,15 @@ def maskname_to_index(maskname="mask0"):
     return int(maskname.split("mask")[1])
 
 
-def process_image_and_masks(
-    sample_path, src_img, flipped=False, trans_img=None, img_size={"w": 512, "h": 512}
-):
+def process_image_and_masks(sample_path, img_size={"w": 512, "h": 512}):
+    src_img_path = os.path.join(sample_path, "src_img.png")
+    src_img = Image.open(src_img_path).convert("RGB")
+    src_img = src_img.resize((img_size["w"], img_size["h"]), Image.BILINEAR)
+    src_img = np.asarray(src_img)
     height, width = src_img.shape[0], src_img.shape[1]
     # center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
     # scale = max(height, width) * 1.0
     # Apply flipping to src_img
-    if flipped:
-        src_img = src_img[:, ::-1, :]
-
-    # Apply affine transform to src_img
-    if trans_img is not None:
-        src_img = cv2.warpAffine(
-            src_img,
-            trans_img,
-            (img_size["w"], img_size["h"]),
-            flags=cv2.INTER_LINEAR,
-        )
-
     # Initialize an empty mask channel
     combined_masks_channel = np.zeros((img_size["h"], img_size["w"]), dtype=np.uint8)
 
@@ -45,20 +35,6 @@ def process_image_and_masks(
                 # Resize mask to original image size before any transformations
                 mask = mask.resize((width, height), Image.BILINEAR)
                 mask = np.asarray(mask)
-
-                # Apply the same flipping as src_img
-                if flipped:
-                    mask = mask[:, ::-1]
-
-                # Apply the same affine transform as src_img
-                if trans_img is not None:
-                    mask = cv2.warpAffine(
-                        mask,
-                        trans_img,
-                        (img_size["w"], img_size["h"]),
-                        flags=cv2.INTER_LINEAR,
-                    )
-
                 # Now, process the mask to set border to 128 and inside to 255
                 # Ensure mask is binary (0 or 255) for findContours
                 mask_binary = (mask > 0).astype(np.uint8) * 255
@@ -95,21 +71,5 @@ def process_image_and_masks(
     masked_img = np.concatenate(
         (src_img, combined_masks_channel[:, :, np.newaxis]), axis=2
     )  # [H, W, C+1]
-
-    # # Color augmentation (applied only to the first 3 RGB channels of masked_img)
-    # if self.split == "train":
-    #     color_aug(self.data_rng, masked_img[:, :, :3], self.eig_val, self.eig_vec)
-    #
-    # # Normalize and transpose (applied to all channels)
-    # # Extend mean and std for the 4th channel (mask channel has 0 mean and 1 std)
-    # extended_mean = np.concatenate(
-    #     (self.mean, np.array([0.0], dtype=np.float32)[None, None, :]), axis=2
-    # )
-    # extended_std = np.concatenate(
-    #     (self.std, np.array([1.0], dtype=np.float32)[None, None, :]), axis=2
-    # )
-
-    # masked_img -= extended_mean
-    # masked_img /= extended_std
     masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, C+1] to [C+1, H, W]
     return masked_img, masks_bbox
