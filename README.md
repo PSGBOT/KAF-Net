@@ -40,13 +40,13 @@ Open `torch/nn/functional.py` and find the line with `torch.batch_norm` and repl
 ### COCO
 #### single GPU or multi GPU using nn.DataParallel
 ```bash
-python train.py --log_name psr_hg_512_dp \                                    train
-                --data_dir dir_to_psr_dataset \
-                --arch fcsgg \
+python train.py --log_name dcn50_simple \                                      main
+                --data_dir ~/Reconst/Data/PSR/Simple \
+                --arch resdcn_50 \
                 --lr 5e-4 \
-                --lr_step 90,120 \
+                --lr_step 90,180 \
                 --batch_size 4 \
-                --num_epochs 140 --num_workers 0 --log_interval 10
+                --num_epochs 360 --num_workers 0 --log_interval 10
 ```
 
 ## Evaluate
