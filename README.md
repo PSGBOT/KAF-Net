@@ -39,7 +39,7 @@ Open `torch/nn/functional.py` and find the line with `torch.batch_norm` and repl
 ## Train
 ### COCO
 #### single GPU or multi GPU using nn.DataParallel
-```
+```bash
 python train.py --log_name psr_hg_512_dp \                                    train
                 --data_dir dir_to_psr_dataset \
                 --arch fcsgg \
@@ -50,3 +50,8 @@ python train.py --log_name psr_hg_512_dp \                                    tr
 ```
 
 ## Evaluate
+
+## Inference
+```bash
+python infer.py --image_path ./data/Sample\ PSR/Sample\ 1 --model_weights ./ckpt/dcn50_simple/checkpoint.t7 --visualize_output --visualization_dir ./debug_viz/infer
+```

@@ -11,19 +11,19 @@ from utils.image import draw_umich_gaussian, gaussian_radius
 from datasets.utils.kaf_gen import get_kaf
 
 PSR_FUNC_CAT = [
-    "other",
-    "handle",
-    "housing",
-    "support",
-    "frame",
-    "button",
-    "wheel",
-    "display",
-    "cover",
-    "plug",
-    "port",
-    "door",
-    "container",
+    "other",  # 0
+    "handle",  # 1
+    "housing",  # 2
+    "support",  # 3
+    "frame",  # 4
+    "button",  # 5
+    "wheel",  # 6
+    "display",  # 7
+    "cover",  # 8
+    "plug",  # 9
+    "port",  # 10
+    "door",  # 11
+    "container",  # 12
 ]
 PSR_FUNC_CAT_IDX = {v: i for i, v in enumerate(PSR_FUNC_CAT)}
 
@@ -94,7 +94,7 @@ class PSRDataset(Dataset):
         self.split_ratio = split_ratio
 
         self.padding = 127  # 31 for resnet/resdcn
-        self.down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+        self.down_ratio = down_ratio
         self.img_size = {"h": img_size, "w": img_size}
         self.hmap_size = {
             "h": img_size // self.down_ratio["hmap"],
@@ -381,7 +381,8 @@ class PSRDataset(Dataset):
                     0,
                     int(
                         gaussian_radius((math.ceil(h), math.ceil(w)), self.gaussian_iou)
-                        / 4
+                        / self.down_ratio["hmap"]
+                        * 2
                     ),
                 )
                 # print(radius)
@@ -452,8 +453,9 @@ class PSRDataset(Dataset):
             "masks_bbox_center": gt_centers.cpu(),
             "hmap": hmap,
             "w_h_": w_h_,
+            "wh_inds": wh_inds,
             "regs": regs,
-            "inds": reg_inds,
+            "reg_inds": reg_inds,
             "ind_masks": ind_masks,
             "gt_relations": raf_field.cpu(),
             "gt_relations_weights": raf_weights.cpu(),
