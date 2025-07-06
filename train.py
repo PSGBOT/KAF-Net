@@ -155,7 +155,7 @@ def main():
         val_dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=1,
+        num_workers=0,
         pin_memory=True,
     )
 
@@ -254,6 +254,7 @@ def main():
                 summary_writer.add_scalar("w_h_loss/train", w_h_loss.item(), step)
                 summary_writer.add_scalar("raf_loss/train", raf_loss.item(), step)
 
+    @torch.no_grad()
     def val_loss_map(epoch):
         # To Do: show loss and map
         print("\n Val@Epoch: %d" % epoch)
@@ -283,8 +284,8 @@ def main():
             w_h_ = outputs[-1][2]
             raf = outputs[-1][3]
 
-            regs = _tranpose_and_gather_feature(regs, batch["inds"])
-            w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
+            regs = _tranpose_and_gather_feature(regs, batch["reg_inds"])
+            w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"])
 
             hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
@@ -323,7 +324,6 @@ def main():
     for epoch in range(1, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
         train(epoch)
-        # psr_eval is not implemented for now
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
             val_loss_map(epoch)
         print(saver.save(model.module.state_dict(), "checkpoint"))
