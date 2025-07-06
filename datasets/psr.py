@@ -94,7 +94,7 @@ class PSRDataset(Dataset):
         self.split_ratio = split_ratio
 
         self.padding = 127  # 31 for resnet/resdcn
-        self.down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+        self.down_ratio = down_ratio
         self.img_size = {"h": img_size, "w": img_size}
         self.hmap_size = {
             "h": img_size // self.down_ratio["hmap"],
@@ -490,3 +490,15 @@ kr structure: [
   ...
 ]
 """
+
+
+class PSRDataset_eval(PSRDataset):
+    def __init__(self, root_dir, split, split_ratio=1.0, down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}, img_size=512):
+        super().__init__(
+            root_dir,
+            split,
+            split_ratio,
+            down_ratio=down_ratio,
+            img_size=img_size,
+        )
+        print("==> Initializing PSR Dataset for evaluation")

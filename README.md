@@ -50,3 +50,19 @@ python train.py --log_name psr_hg_512_dp \                                    tr
 ```
 
 ## Evaluate
+mkdir -p ~/Reconst/Data/PSR/Simple/train
+mkdir -p ~/Reconst/Data/PSR/Simple/val
+cd ~/Reconst/Data/PSR/Simple
+ls -d */ | grep -vE 'train|val' | shuf > all_samples.txt
+head -n 120 all_samples.txt > train_samples.txt
+tail -n +121 all_samples.txt > val_samples.txt
+cat train_samples.txt | xargs -I{} mv {} train/
+cat val_samples.txt | xargs -I{} mv {} val/
+
+python train.py --log_name dcn50_simple \
+                --data_dir ~/Reconst/Data/PSR/Simple \
+                --arch resdcn_50 \
+                --lr 5e-4 \
+                --lr_step 90,180 \
+                --batch_size 4 \
+                --num_epochs 10 --num_workers 0 --log_interval 10
