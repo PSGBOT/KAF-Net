@@ -93,7 +93,7 @@ def main():
     for f in os.listdir(cfg.log_dir):
         os.remove(os.path.join(cfg.log_dir, f))
     summary_writer = create_summary(cfg.local_rank, log_dir=cfg.log_dir)
-    
+
     print = logger.info
     print(cfg)
 
@@ -115,9 +115,12 @@ def main():
     else:
         cfg.device = torch.device("cuda")
     print("Setting up data...")
-    # Dataset = COCO if cfg.dataset == "coco" else PascalVOC
-    # onlt test psr dataset
-    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    if "hourglass" in cfg.arch:
+        down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
+    elif "resdcn" in cfg.arch:
+        down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    else:
+        raise NotImplementedError
     Dataset = PSRDataset
     train_dataset = Dataset(
         os.path.join(cfg.data_dir, "train"),
@@ -141,12 +144,12 @@ def main():
     # TODO: dataset for eval
     Dataset_eval = PSRDataset_eval
     val_dataset = Dataset_eval(
-        os.path.join(cfg.data_dir, "val"), 
-        "val", 
+        os.path.join(cfg.data_dir, "val"),
+        "val",
         split_ratio=cfg.split_ratio,
         down_ratio=down_ratio,
         img_size=cfg.img_size,
-        )
+    )
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -211,8 +214,8 @@ def main():
             w_h_ = outputs[-1][2]
             raf = outputs[-1][3]
 
-            regs = _tranpose_and_gather_feature(regs, batch["inds"])
-            w_h_ = _tranpose_and_gather_feature(w_h_, batch["inds"])
+            regs = _tranpose_and_gather_feature(regs, batch["reg_inds"])
+            w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"])
 
             hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
@@ -244,11 +247,12 @@ def main():
                 )
 
                 step = len(train_loader) * epoch + batch_idx
-                summary_writer.add_scalar("hmap_loss/train", hmap_final_loss.item(), step)
+                summary_writer.add_scalar(
+                    "hmap_loss/train", hmap_final_loss.item(), step
+                )
                 summary_writer.add_scalar("reg_loss/train", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss/train", w_h_loss.item(), step)
                 summary_writer.add_scalar("raf_loss/train", raf_loss.item(), step)
-
 
     def val_loss_map(epoch):
         # To Do: show loss and map
@@ -294,7 +298,7 @@ def main():
             total_w_h_loss += w_h_loss.item()
             total_raf_loss += raf_loss.item()
             total_loss += loss.item()
-            
+
             if batch_idx % cfg.log_interval == 0:
                 print(
                     "[%d/%d-%d/%d] "
