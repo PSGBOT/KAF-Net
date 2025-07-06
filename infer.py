@@ -75,6 +75,8 @@ def main():
         )
     elif args.arch == "small_hg":
         model = hourglass.get_kaf_hourglass["hourglass_small"]
+    elif args.arch == "large_hg":
+        model = hourglass.get_kaf_hourglass["hourglass_large"]
     else:
         raise ValueError(f"Unsupported architecture: {args.arch}")
 
@@ -127,9 +129,12 @@ def visualize_heatmap(hmap, output_dir, image_name):
     hmap_np = hmap.squeeze(0).cpu().numpy()  # Shape: [num_classes, H, W]
 
     num_classes = hmap_np.shape[0]
+
     for i in range(num_classes):
         heatmap = hmap_np[i]
         # Normalize to 0-255 for visualization
+        print(heatmap.max())
+        print(heatmap.min())
         heatmap = (
             (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8) * 255
         )
