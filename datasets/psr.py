@@ -492,3 +492,15 @@ kr structure: [
   ...
 ]
 """
+
+
+class PSRDataset_eval(PSRDataset):
+    def __init__(self, root_dir, split, split_ratio=1.0, down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}, img_size=512):
+        super().__init__(
+            root_dir,
+            split,
+            split_ratio,
+            down_ratio=down_ratio,
+            img_size=img_size,
+        )
+        print("==> Initializing PSR Dataset for evaluation")

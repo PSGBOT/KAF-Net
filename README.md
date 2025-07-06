@@ -50,6 +50,16 @@ python train.py --log_name dcn50_simple \                                      m
 ```
 
 ## Evaluate
+```bash
+
+python train.py --log_name dcn50_simple \
+                --data_dir ~/Reconst/Data/PSR/Simple \
+                --arch resdcn_50 \
+                --lr 5e-4 \
+                --lr_step 90,180 \
+                --batch_size 4 \
+                --num_epochs 10 --num_workers 0 --log_interval 10
+```
 
 ## Inference
 ```bash
