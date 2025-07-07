@@ -126,18 +126,22 @@ def visualize_heatmap(hmap, output_dir, image_name):
     os.makedirs(output_dir, exist_ok=True)
 
     # Convert heatmap to numpy and remove batch dimension
+    hmap = torch.sigmoid(hmap)
     hmap_np = hmap.squeeze(0).cpu().numpy()  # Shape: [num_classes, H, W]
 
     num_classes = hmap_np.shape[0]
+
+    max_heat = 0
+    min_heat = 0
+    for i in range(num_classes):
+        max_heat = max(max_heat, hmap_np[i].max())
 
     for i in range(num_classes):
         heatmap = hmap_np[i]
         # Normalize to 0-255 for visualization
         print(heatmap.max())
         print(heatmap.min())
-        heatmap = (
-            (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8) * 255
-        )
+        heatmap = (heatmap - min_heat) / (max_heat - min_heat + 1e-8) * 255
         heatmap = heatmap.astype(np.uint8)
 
         # Apply a colormap
