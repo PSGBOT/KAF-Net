@@ -223,7 +223,7 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -293,7 +293,7 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = 0.5 * hmap_loss + 1 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
             total_hmap_loss += hmap_final_loss.item()
             total_reg_loss += reg_loss.item()
             total_w_h_loss += w_h_loss.item()
