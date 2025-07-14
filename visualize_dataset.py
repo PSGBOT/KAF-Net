@@ -6,7 +6,8 @@ from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD, PSR_KR_CAT_IDX
 
 
 def visualize_dataset(root_dir, img_size=512):
-    down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    # down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    down_ratio = {"hmap": 32, "wh": 4, "reg": 4, "kaf": 4}
     dataset = PSRDataset(
         root_dir=root_dir, split="train", down_ratio=down_ratio, img_size=img_size
     )
@@ -33,10 +34,10 @@ def visualize_dataset(root_dir, img_size=512):
         fig, axes = plt.subplots(2, 4, figsize=(24, 12))
         hmap = data["hmap"][0].numpy()
         regs = data["regs"][0].numpy()
-        inds = data["inds"][0].numpy()
+        reg_inds = data["reg_inds"][0].numpy()
         ind_masks = data["ind_masks"][0].numpy()
-        part_centers = data["masks_bbox_center"][data["inds"] > 0].cpu().numpy()
-        part_scales = data["masks_bbox_wh"][data["inds"] > 0].cpu().numpy()
+        part_centers = data["masks_bbox_center"][data["reg_inds"] > 0].cpu().numpy()
+        part_scales = data["masks_bbox_wh"][data["wh_inds"] > 0].cpu().numpy()
         print(part_centers)
 
         # Changed from 2,3 to 2,4 to accommodate new plots
@@ -48,7 +49,7 @@ def visualize_dataset(root_dir, img_size=512):
             "Green Channel",
             "Blue Channel",
             "Mask Channel",
-            "Hmap (Door Category)",
+            "Hmap (Housing Category)",
             "Width/Height & Regs",
             "RAF Field Magnitude (Fixed)",  # New title
             "RAF Weights (Fixed)",  # New title
@@ -92,18 +93,26 @@ def visualize_dataset(root_dir, img_size=512):
         ax = axes[4]
         # Assuming 'door' is at index 11 in PSR_FUNC_CAT
         # You might want to make this dynamic or configurable
-        door_hmap_idx = dataset.func_cat_ids.get("door", -1)
+        door_hmap_idx = dataset.func_cat_ids.get("housing", -1)
         if door_hmap_idx != -1 and hmap.shape[0] > door_hmap_idx:
             ax.imshow(hmap[door_hmap_idx], cmap="hot", alpha=1)
             ax.set_title(titles[4])
             ax.axis("off")
 
             # Overlay center points from inds and regs on the heatmap
-            for obj_idx in range(len(inds)):
+            for obj_idx in range(len(reg_inds)):
                 if ind_masks[obj_idx] == 1:
-                    fmap_w = dataset.hmap_size["w"]
-                    center_fmap_x = inds[obj_idx] % fmap_w + regs[obj_idx, 0]
-                    center_fmap_y = inds[obj_idx] // fmap_w + regs[obj_idx, 1]
+                    fmap_w = dataset.offset_size["w"]
+                    center_fmap_x = (
+                        (reg_inds[obj_idx] % fmap_w + regs[obj_idx, 0])
+                        * dataset.hmap_size["w"]
+                        / dataset.offset_size["w"]
+                    )
+                    center_fmap_y = (
+                        (reg_inds[obj_idx] // fmap_w + regs[obj_idx, 1])
+                        * dataset.hmap_size["w"]
+                        / dataset.offset_size["w"]
+                    )
                     ax.scatter(
                         center_fmap_x,
                         center_fmap_y,

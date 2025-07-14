@@ -182,7 +182,8 @@ class KAF_ResDCN(nn.Module):
         self.layer2 = self._make_layer(blocks[0], 128, num_layers[1], stride=2)
         self.layer3 = self._make_layer(blocks[1], 256, num_layers[2], stride=2)
         self.layer4 = self._make_layer(blocks[1], 512, num_layers[3], stride=2)
-        self.fpn = get_fpn()
+        self.fpn_1 = get_fpn()
+        self.fpn_2 = get_fpn()
 
         if head_conv > 0:
             # heatmap layers
@@ -266,8 +267,9 @@ class KAF_ResDCN(nn.Module):
         out2 = self.layer2(out1)
         out3 = self.layer3(out2)
         out4 = self.layer4(out3)
-        p2, p3, p4, p5 = self.fpn([out1, out2, out3, out4])
-        out = [self.hmap(p5), self.regs(p4), self.w_h_(p3), self.raf(p2)]
+        p2_1, p3_1, p4_1, p5_1 = self.fpn_1([out1, out2, out3, out4])
+        p2_2, p3_2, p4_2, p5_2 = self.fpn_2([out1, out2, out3, out4])
+        out = [self.hmap(p5_1), self.regs(p4_1), self.w_h_(p3_1), self.raf(p2_2)]
         return [out]
 
     def init_weights(self, num_layers):
@@ -293,14 +295,14 @@ resdcn_spec = {
 }
 
 
-def get_kaf_resnet(num_layers, head_conv=64, num_classes=80, num_rel=14):
+def get_kaf_resnet(num_layers, head_conv=64, num_classes=13, num_rel=14):
     block_classes, layers = resnet_spec[num_layers]
     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
     # model.init_weights(num_layers) # Commented out as deconv_layers is not defined
     return model
 
 
-def get_kaf_resdcn(num_layers, head_conv=64, num_classes=80, num_rel=14):
+def get_kaf_resdcn(num_layers, head_conv=64, num_classes=13, num_rel=14):
     block_classes, layers = resdcn_spec[num_layers]
     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
     # model.init_weights(num_layers) # Already commented out, keeping it that way
@@ -314,7 +316,7 @@ if __name__ == "__main__":
         print(output.data.cpu().numpy().shape)
         # pass
 
-    net = get_kaf_resdcn(50, num_classes=80).cuda()
+    net = get_kaf_resdcn(50).cuda()
 
     for m in net.modules():
         if isinstance(m, nn.Conv2d) or isinstance(m, DCN):
