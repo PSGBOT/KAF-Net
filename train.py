@@ -16,6 +16,7 @@ from datasets.psr import PSRDataset, PSRDataset_eval
 from nets.raf_loss import _raf_loss
 from nets.kaf.resdcn import get_kaf_resdcn
 from nets.kaf.hourglass import get_kaf_hourglass
+from nets.kaf.HRnet import get_kaf_hrnet
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -119,6 +120,8 @@ def main():
         down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
     elif "resdcn" in cfg.arch:
         down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    elif "hrnet" in cfg.arch:
+        down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
     else:
         raise NotImplementedError
     Dataset = PSRDataset
@@ -167,6 +170,11 @@ def main():
             num_layers=int(cfg.arch.split("_")[-1]),
             num_classes=train_dataset.num_func_cat,
             num_rel=train_dataset.num_kr_cat,
+        )
+    elif "hrnet" in cfg.arch:
+        model = get_kaf_hrnet(
+            num_classes=train_dataset.num_func_cat,
+            num_relations=train_dataset.num_kr_cat,
         )
     else:
         raise NotImplementedError
