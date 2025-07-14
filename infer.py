@@ -73,6 +73,10 @@ def main():
         model = resdcn.get_kaf_resdcn(
             num_layers=50,
         )
+    elif args.arch == "resdcn_101":
+        model = resdcn.get_kaf_resdcn(
+            num_layers=101,
+        )
     elif args.arch == "small_hg":
         model = hourglass.get_kaf_hourglass["hourglass_small"]
     elif args.arch == "large_hg":
