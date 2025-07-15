@@ -49,6 +49,12 @@ parser.add_argument("--lr", type=float, default=5e-4)
 parser.add_argument("--lr_step", type=str, default="90,120")
 parser.add_argument("--batch_size", type=int, default=48)
 parser.add_argument("--num_epochs", type=int, default=140)
+parser.add_argument(
+    "--max_grad_norm",
+    type=float,
+    default=5.0,
+    help="Max gradient norm for clipping. Set to 0.0 to disable.",
+)
 
 parser.add_argument("--test_topk", type=int, default=100)
 
@@ -235,6 +241,8 @@ def main():
 
             optimizer.zero_grad()
             loss.backward()
+            if cfg.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
             optimizer.step()
 
             if batch_idx % cfg.log_interval == 0:
