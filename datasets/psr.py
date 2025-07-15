@@ -266,7 +266,11 @@ class PSRDataset(Dataset):
 
         # Load src_img.png and masks, set the border of the masks to be 128(gray), combine these masks together into the 4th channel of the source image => `masked_img`
         src_img_path = os.path.join(sample_path, "src_img.png")
-        src_img = Image.open(src_img_path).convert("RGB")
+        src_img = Image.open(src_img_path)
+        # 如果是调色板模式，先转换
+        if src_img.mode == "P":
+            src_img = src_img.convert("RGBA")  # 转为带透明度格式
+        src_img = src_img.convert("RGB")
         src_img = np.asarray(src_img)
         height, width = src_img.shape[0], src_img.shape[1]
         center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
