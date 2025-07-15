@@ -16,6 +16,7 @@ from datasets.psr import PSRDataset, PSRDataset_eval
 from nets.raf_loss import _raf_loss
 from nets.kaf.resdcn import get_kaf_resdcn
 from nets.kaf.hourglass import get_kaf_hourglass
+from nets.kaf.HRnet import get_kaf_hrnet
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -119,6 +120,8 @@ def main():
         down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
     elif "resdcn" in cfg.arch:
         down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+    elif "hrnet" in cfg.arch:
+        down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
     else:
         raise NotImplementedError
     Dataset = PSRDataset
@@ -167,6 +170,11 @@ def main():
             num_layers=int(cfg.arch.split("_")[-1]),
             num_classes=train_dataset.num_func_cat,
             num_rel=train_dataset.num_kr_cat,
+        )
+    elif "hrnet" in cfg.arch:
+        model = get_kaf_hrnet(
+            num_classes=train_dataset.num_func_cat,
+            num_relations=train_dataset.num_kr_cat,
         )
     else:
         raise NotImplementedError
@@ -223,7 +231,7 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -293,7 +301,7 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = hmap_loss + 1 * reg_loss + 0.1 * w_h_loss + raf_loss
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
             total_hmap_loss += hmap_final_loss.item()
             total_reg_loss += reg_loss.item()
             total_w_h_loss += w_h_loss.item()
