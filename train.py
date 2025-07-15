@@ -335,8 +335,7 @@ def main():
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
             val_loss_map(epoch)
         print(saver.save(model.module.state_dict(), "checkpoint"))
-        lr_scheduler.step(epoch)  # move to here after pytorch1.1.0
-
+        lr_scheduler.step()
     summary_writer.close()
 
 
