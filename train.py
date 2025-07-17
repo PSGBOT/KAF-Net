@@ -49,6 +49,12 @@ parser.add_argument("--lr", type=float, default=5e-4)
 parser.add_argument("--lr_step", type=str, default="90,120")
 parser.add_argument("--batch_size", type=int, default=48)
 parser.add_argument("--num_epochs", type=int, default=140)
+parser.add_argument(
+    "--max_grad_norm",
+    type=float,
+    default=5.0,
+    help="Max gradient norm for clipping. Set to 0.0 to disable.",
+)
 
 parser.add_argument("--test_topk", type=int, default=100)
 
@@ -63,7 +69,7 @@ os.chdir(cfg.root_dir)
 cfg.log_dir = os.path.join(cfg.root_dir, "logs", cfg.log_name)
 cfg.ckpt_dir = os.path.join(cfg.root_dir, "ckpt", cfg.log_name)
 cfg.pretrain_dir = os.path.join(
-    cfg.root_dir, "ckpt", cfg.pretrain_name, "checkpoint.t7"
+    cfg.root_dir, "ckpt", cfg.pretrain_name, "checkpoint.pth"
 )
 
 os.makedirs(cfg.log_dir, exist_ok=True)
@@ -156,7 +162,7 @@ def main():
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=1,
+        batch_size=cfg.batch_size // num_gpus if cfg.dist else cfg.batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=True,
@@ -192,8 +198,9 @@ def main():
     else:
         model = nn.DataParallel(model).to(cfg.device)
 
+    start_epoch = 1
     if os.path.isfile(cfg.pretrain_dir):
-        model = load_model(model, cfg.pretrain_dir)
+        model, start_epoch = load_model(model, cfg.pretrain_dir)
 
     optimizer = torch.optim.Adam(model.parameters(), cfg.lr)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -231,10 +238,12 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
 
             optimizer.zero_grad()
             loss.backward()
+            if cfg.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
             optimizer.step()
 
             if batch_idx % cfg.log_interval == 0:
@@ -245,7 +254,7 @@ def main():
                     % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
                     + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
                     % (
-                        hmap_final_loss.item(),
+                        hmap_loss.item(),
                         reg_loss.item(),
                         w_h_loss.item(),
                         raf_loss.item(),
@@ -255,9 +264,8 @@ def main():
                 )
 
                 step = len(train_loader) * epoch + batch_idx
-                summary_writer.add_scalar(
-                    "hmap_loss/train", hmap_final_loss.item(), step
-                )
+                summary_writer.add_scalar("total_loss/train", loss.item(), step)
+                summary_writer.add_scalar("hmap_loss/train", hmap_loss.item(), step)
                 summary_writer.add_scalar("reg_loss/train", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss/train", w_h_loss.item(), step)
                 summary_writer.add_scalar("raf_loss/train", raf_loss.item(), step)
@@ -301,7 +309,7 @@ def main():
             raf_loss = _raf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 2 * raf_loss
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
             total_hmap_loss += hmap_final_loss.item()
             total_reg_loss += reg_loss.item()
             total_w_h_loss += w_h_loss.item()
@@ -328,13 +336,22 @@ def main():
         summary_writer.add_scalar("raf_loss/val", total_raf_loss / num_batches, step)
         return
 
-    print("Starting training...")
-    for epoch in range(1, cfg.num_epochs + 1):
+    print(f"Starting training at epoch {start_epoch}...")
+    for epoch in range(start_epoch, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
         train(epoch)
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
             val_loss_map(epoch)
-        print(saver.save(model.module.state_dict(), "checkpoint"))
+        print(
+            saver.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.module.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                },
+                "checkpoint",
+            )
+        )
         lr_scheduler.step()
     summary_writer.close()
 
