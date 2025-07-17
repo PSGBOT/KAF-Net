@@ -198,8 +198,9 @@ def main():
     else:
         model = nn.DataParallel(model).to(cfg.device)
 
+    start_epoch = 1
     if os.path.isfile(cfg.pretrain_dir):
-        model = load_model(model, cfg.pretrain_dir, cfg.device)
+        model, start_epoch = load_model(model, cfg.pretrain_dir)
 
     optimizer = torch.optim.Adam(model.parameters(), cfg.lr)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -335,8 +336,8 @@ def main():
         summary_writer.add_scalar("raf_loss/val", total_raf_loss / num_batches, step)
         return
 
-    print("Starting training...")
-    for epoch in range(1, cfg.num_epochs + 1):
+    print(f"Starting training at epoch {start_epoch}...")
+    for epoch in range(start_epoch, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
         train(epoch)
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
