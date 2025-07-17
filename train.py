@@ -199,7 +199,7 @@ def main():
         model = nn.DataParallel(model).to(cfg.device)
 
     if os.path.isfile(cfg.pretrain_dir):
-        model = load_model(model, cfg.pretrain_dir)
+        model = load_model(model, cfg.pretrain_dir, cfg.device)
 
     optimizer = torch.optim.Adam(model.parameters(), cfg.lr)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -341,7 +341,16 @@ def main():
         train(epoch)
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
             val_loss_map(epoch)
-        print(saver.save(model.module.state_dict(), "checkpoint"))
+        print(
+            saver.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                },
+                "checkpoint",
+            )
+        )
         lr_scheduler.step()
     summary_writer.close()
 

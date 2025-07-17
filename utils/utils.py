@@ -51,8 +51,8 @@ def flip_lr_off(x, flip_idx):
     return torch.from_numpy(tmp.reshape(shape)).to(x.device)
 
 
-def load_model(model, pretrain_dir):
-    state_dict_ = torch.load(pretrain_dir, map_location="cuda:0")
+def load_model(model, pretrain_dir, device):
+    state_dict_ = torch.load(pretrain_dir, map_location=device)
     print("loaded pretrained weights form %s !" % pretrain_dir)
     state_dict = OrderedDict()
 
