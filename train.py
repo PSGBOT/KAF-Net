@@ -69,7 +69,7 @@ os.chdir(cfg.root_dir)
 cfg.log_dir = os.path.join(cfg.root_dir, "logs", cfg.log_name)
 cfg.ckpt_dir = os.path.join(cfg.root_dir, "ckpt", cfg.log_name)
 cfg.pretrain_dir = os.path.join(
-    cfg.root_dir, "ckpt", cfg.pretrain_name, "checkpoint.t7"
+    cfg.root_dir, "ckpt", cfg.pretrain_name, "checkpoint.pth"
 )
 
 os.makedirs(cfg.log_dir, exist_ok=True)
