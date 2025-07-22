@@ -92,6 +92,7 @@ def to_device(batch, device):
         return batch  # skip non-tensor types
 
 
+# from https://github.com/seominseok0429/pytorch-warmup-cosine-lr/blob/master/warmup_scheduler/scheduler.py
 class GradualWarmupScheduler(_LRScheduler):
     def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
         self.multiplier = multiplier
