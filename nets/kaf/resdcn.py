@@ -289,6 +289,7 @@ resnet_spec = {
 }
 
 resdcn_spec = {
+    18: ([ConvBottleneck, DeformBottleneck], [2, 2, 2, 2]),
     50: ([ConvBottleneck, DeformBottleneck], [3, 4, 6, 3]),
     101: ([ConvBottleneck, DeformBottleneck], [3, 4, 23, 3]),
     152: ([ConvBottleneck, DeformBottleneck], [3, 8, 36, 3]),
