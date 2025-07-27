@@ -52,37 +52,45 @@ def flip_lr_off(x, flip_idx):
 
 
 def load_model(model, pretrain_dir):
-    state_dict_ = torch.load(pretrain_dir, map_location="cuda:0")
-    print("loaded pretrained weights form %s !" % pretrain_dir)
-    state_dict = OrderedDict()
+    ckpt = torch.load(pretrain_dir, map_location="cuda:0")
+    state_dict_ = ckpt["model_state_dict"]
+    print("Loaded pretrained weights from %s!" % pretrain_dir)
 
-    # convert data_parallal to model
-    for key in state_dict_:
-        if key.startswith("module") and not key.startswith("module_list"):
-            state_dict[key[7:]] = state_dict_[key]
-        else:
-            state_dict[key] = state_dict_[key]
-
-    # check loaded parameters and created model parameters
+    new_state_dict = OrderedDict()
     model_state_dict = model.state_dict()
-    for key in state_dict:
-        if key in model_state_dict:
-            if state_dict[key].shape != model_state_dict[key].shape:
-                print(
-                    "Skip loading parameter {}, required shape{}, loaded shape{}.".format(
-                        key, model_state_dict[key].shape, state_dict[key].shape
-                    )
-                )
-                state_dict[key] = model_state_dict[key]
-        else:
-            print("Drop parameter {}.".format(key))
-    for key in model_state_dict:
-        if key not in state_dict:
-            print("No param {}.".format(key))
-            state_dict[key] = model_state_dict[key]
-    model.load_state_dict(state_dict, strict=False)
 
-    return model
+    # 检测当前模型是否使用 DataParallel（即参数是否带 module.）
+    model_is_parallel = list(model_state_dict.keys())[0].startswith("module")
+    ckpt_is_parallel = list(state_dict_.keys())[0].startswith("module")
+
+    for k, v in state_dict_.items():
+        # 去掉/添加 module. 前缀
+        if ckpt_is_parallel and not model_is_parallel:
+            k = k[len("module.") :]
+        elif not ckpt_is_parallel and model_is_parallel:
+            k = "module." + k
+        new_state_dict[k] = v
+
+    # 逐参数检查是否 shape 匹配
+    for k in list(new_state_dict.keys()):
+        if k in model_state_dict:
+            if new_state_dict[k].shape != model_state_dict[k].shape:
+                print(
+                    f"⚠️ Skip loading parameter {k}: "
+                    f"required shape {model_state_dict[k].shape}, "
+                    f"loaded shape {new_state_dict[k].shape}."
+                )
+                del new_state_dict[k]
+        else:
+            print(f"🗑️ Drop parameter {k}.")
+
+    for k in model_state_dict:
+        if k not in new_state_dict:
+            print(f"❌ No param {k} in checkpoint.")
+
+    model.load_state_dict(new_state_dict, strict=False)
+
+    return model, ckpt.get("epoch", 0) + 1
 
 
 def count_parameters(model):

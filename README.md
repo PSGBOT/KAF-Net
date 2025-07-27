@@ -37,7 +37,7 @@ Open `torch/nn/functional.py` and find the line with `torch.batch_norm` and repl
 
 
 ## Train
-### COCO
+### PSR Dataset
 #### single GPU or multi GPU using nn.DataParallel
 ```
 python train.py --log_name psr_hg_512_dp \                                    train

@@ -266,7 +266,11 @@ class PSRDataset(Dataset):
 
         # Load src_img.png and masks, set the border of the masks to be 128(gray), combine these masks together into the 4th channel of the source image => `masked_img`
         src_img_path = os.path.join(sample_path, "src_img.png")
-        src_img = Image.open(src_img_path).convert("RGB")
+        src_img = Image.open(src_img_path)
+        # 如果是调色板模式，先转换
+        if src_img.mode == "P":
+            src_img = src_img.convert("RGBA")  # 转为带透明度格式
+        src_img = src_img.convert("RGB")
         src_img = np.asarray(src_img)
         height, width = src_img.shape[0], src_img.shape[1]
         center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
@@ -308,20 +312,38 @@ class PSRDataset(Dataset):
         # assign category index to each mask
         for pair_relation in config["kinematic relation"]:
             part0_cat_str_list = pair_relation[2]["part0_function"]
-            for cat_str in part0_cat_str_list:
-                part0_cat_idx = self.func_cat_ids.get(cat_str, 0)
-                if part0_cat_idx not in masks_cat[maskname_to_index(pair_relation[0])]:
-                    masks_cat[maskname_to_index(pair_relation[0])][part0_cat_idx] = 1
-                else:
-                    masks_cat[maskname_to_index(pair_relation[0])][part0_cat_idx] += 1
+            try:
+                for cat_str in part0_cat_str_list:
+                    part0_cat_idx = self.func_cat_ids.get(cat_str, 0)
+                    if (
+                        part0_cat_idx
+                        not in masks_cat[maskname_to_index(pair_relation[0])]
+                    ):
+                        masks_cat[maskname_to_index(pair_relation[0])][
+                            part0_cat_idx
+                        ] = 1
+                    else:
+                        masks_cat[maskname_to_index(pair_relation[0])][
+                            part0_cat_idx
+                        ] += 1
 
-            part1_cat_str_list = pair_relation[2]["part1_function"]
-            for cat_str in part1_cat_str_list:
-                part1_cat_idx = self.func_cat_ids.get(cat_str, 0)
-                if part1_cat_idx not in masks_cat[maskname_to_index(pair_relation[1])]:
-                    masks_cat[maskname_to_index(pair_relation[1])][part1_cat_idx] = 1
-                else:
-                    masks_cat[maskname_to_index(pair_relation[1])][part1_cat_idx] += 1
+                part1_cat_str_list = pair_relation[2]["part1_function"]
+                for cat_str in part1_cat_str_list:
+                    part1_cat_idx = self.func_cat_ids.get(cat_str, 0)
+                    if (
+                        part1_cat_idx
+                        not in masks_cat[maskname_to_index(pair_relation[1])]
+                    ):
+                        masks_cat[maskname_to_index(pair_relation[1])][
+                            part1_cat_idx
+                        ] = 1
+                    else:
+                        masks_cat[maskname_to_index(pair_relation[1])][
+                            part1_cat_idx
+                        ] += 1
+            except Exception as e:
+                print(f"error sample: {sample_path}")
+                raise e
 
             kjs = pair_relation[2]["kinematic_joints"]
             for kj in kjs:
@@ -495,7 +517,14 @@ kr structure: [
 
 
 class PSRDataset_eval(PSRDataset):
-    def __init__(self, root_dir, split, split_ratio=1.0, down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}, img_size=512):
+    def __init__(
+        self,
+        root_dir,
+        split,
+        split_ratio=1.0,
+        down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
+        img_size=512,
+    ):
         super().__init__(
             root_dir,
             split,
