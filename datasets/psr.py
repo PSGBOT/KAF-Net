@@ -68,11 +68,13 @@ class PSRDataset(Dataset):
         split_ratio=1.0,
         down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
         img_size=512,
+        prune=True,
     ):
         print("==> Initializing PSR Dataset")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.root_dir = root_dir
         self.samples = []
+        self.prune = prune
 
         self.func_cat = PSR_FUNC_CAT
         self.func_cat_ids = PSR_FUNC_CAT_IDX
@@ -260,7 +262,10 @@ class PSRDataset(Dataset):
         sample_path = self.samples[idx]
 
         # Load config.json
-        config_path = os.path.join(sample_path, "config.json")
+        if self.prune:
+            config_path = os.path.join(sample_path, "pruned_config.json")
+        else:
+            config_path = os.path.join(sample_path, "config.json")
         with open(config_path, "r") as f:
             config = json.load(f)
 
@@ -524,6 +529,7 @@ class PSRDataset_eval(PSRDataset):
         split_ratio=1.0,
         down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
         img_size=512,
+        prune=True,
     ):
         super().__init__(
             root_dir,
@@ -531,5 +537,6 @@ class PSRDataset_eval(PSRDataset):
             split_ratio,
             down_ratio=down_ratio,
             img_size=img_size,
+            prune=True,
         )
         print("==> Initializing PSR Dataset for evaluation")

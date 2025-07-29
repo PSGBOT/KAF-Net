@@ -64,6 +64,7 @@ parser.add_argument("--test_topk", type=int, default=100)
 parser.add_argument("--log_interval", type=int, default=100)
 parser.add_argument("--val_interval", type=int, default=5)
 parser.add_argument("--num_workers", type=int, default=2)
+parser.add_argument("--prune", type=bool, default=True)
 
 cfg = parser.parse_args()
 
@@ -197,6 +198,7 @@ def main():
         split_ratio=cfg.split_ratio,
         down_ratio=down_ratio,
         img_size=cfg.img_size,
+        prune=cfg.prune,
     )
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=num_gpus, rank=cfg.local_rank
@@ -218,6 +220,7 @@ def main():
         split_ratio=cfg.split_ratio,
         down_ratio=down_ratio,
         img_size=cfg.img_size,
+        prune=cfg.prune,
     )
 
     val_loader = torch.utils.data.DataLoader(
