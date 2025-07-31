@@ -17,6 +17,7 @@ from nets.raf_loss import _raf_loss
 from nets.kaf.resdcn import get_kaf_resdcn
 from nets.kaf.hourglass import get_kaf_hourglass
 from nets.kaf.HRnet import get_kaf_hrnet
+from nets.kaf.resnet_pretrain import get_resnet50_fpn
 from utils.utils import _tranpose_and_gather_feature, load_model
 from utils.image import transform_preds
 from utils.losses import _neg_loss, _reg_loss
@@ -244,6 +245,10 @@ def main():
         model = get_kaf_hrnet(
             num_classes=train_dataset.num_func_cat,
             num_relations=train_dataset.num_kr_cat,
+        )
+    elif "resnet" in cfg.arch:
+        model = get_resnet50_fpn(
+            pretrained=True, input_channels=4, num_classes=13, num_rel=14, head_conv=64
         )
     else:
         raise NotImplementedError
