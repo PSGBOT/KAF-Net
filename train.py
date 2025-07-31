@@ -190,6 +190,8 @@ def main():
         down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
     elif "hrnet" in cfg.arch:
         down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
+    elif "resnet" in cfg.arch:
+        down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
     else:
         raise NotImplementedError
     Dataset = PSRDataset
