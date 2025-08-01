@@ -7,7 +7,7 @@ from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD, PSR_KR_CAT_IDX
 
 def visualize_dataset(root_dir, img_size=512):
     # down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
-    down_ratio = {"hmap": 32, "wh": 4, "reg": 4, "kaf": 4}
+    down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     dataset = PSRDataset(
         root_dir=root_dir, split="train", down_ratio=down_ratio, img_size=img_size
     )
@@ -27,23 +27,40 @@ def visualize_dataset(root_dir, img_size=512):
         )  # Clip values to [0, 1]
 
         # Convert from [C, H, W] to [H, W, C]
-        unnormalized_masked_img = masked_img.transpose(1, 2, 0)
+        unnormalized_masked_img = unnormalized_masked_img.transpose(
+            1, 2, 0
+        )  # This line is correct as is
 
         # Visualize each channel
         # Changed from 1,6 to 2,4 to accommodate new plots
         fig, axes = plt.subplots(2, 4, figsize=(24, 12))
-        hmap = data["hmap"][0].numpy()
-        regs = data["regs"][0].numpy()
-        reg_inds = data["reg_inds"][0].numpy()
+        hmap = data["hmap"][0][0].numpy()  # Added [0] for batch dim
+        regs = data["regs"][0][0].numpy()  # Added [0] for batch dim
+        reg_inds = data["reg_inds"][0][0].numpy()  # Added [0] for batch dim
+        wh_inds = data["wh_inds"][0][0].numpy()  # Added [0] for batch dim
         ind_masks = data["ind_masks"][0].numpy()
-        part_centers = data["masks_bbox_center"][data["reg_inds"] > 0].cpu().numpy()
-        part_scales = data["masks_bbox_wh"][data["wh_inds"] > 0].cpu().numpy()
+        part_centers = (
+            data["masks_bbox_center"][0][ind_masks == 1].cpu().numpy()
+        )  # Corrected filtering and added [0] for batch dim
+        part_scales = (
+            data["masks_bbox_wh"][0][ind_masks == 1].cpu().numpy()
+        )  # Corrected filtering and added [0] for batch dim
         print(part_centers)
+
+        # Select a specific FPN level for visualization (e.g., the coarsest level, which is the first one in the list)
+        fpn_level_idx = 2
+        hmap_level = data["hmap"][fpn_level_idx][0].numpy()  # Added [0] for batch dim
+        regs_level = data["regs"][fpn_level_idx][0].numpy()  # Added [0] for batch dim
+        reg_inds_level = data["reg_inds"][fpn_level_idx][
+            0
+        ].numpy()  # Added [0] for batch dim
+        wh_inds_level = data["wh_inds"][fpn_level_idx][
+            0
+        ].numpy()  # Added [0] for batch dim
 
         # Changed from 2,3 to 2,4 to accommodate new plots
         fig, axes = plt.subplots(2, 4, figsize=(24, 12))
         axes = axes.flatten()
-
         titles = [
             "Red Channel",
             "Green Channel",
@@ -92,26 +109,31 @@ def visualize_dataset(root_dir, img_size=512):
         # Display Hmap for a specific category (e.g., 'door' which is index 11)
         ax = axes[4]
         # Assuming 'door' is at index 11 in PSR_FUNC_CAT
-        # You might want to make this dynamic or configurable
+        # You might want to make this dynamic or configurable, using 'housing' as an example
         door_hmap_idx = dataset.func_cat_ids.get("housing", -1)
-        if door_hmap_idx != -1 and hmap.shape[0] > door_hmap_idx:
-            ax.imshow(hmap[door_hmap_idx], cmap="hot", alpha=1)
+        if door_hmap_idx != -1 and hmap_level.shape[0] > door_hmap_idx:
+            ax.imshow(hmap_level[door_hmap_idx], cmap="hot", alpha=1)
             ax.set_title(titles[4])
             ax.axis("off")
 
             # Overlay center points from inds and regs on the heatmap
-            for obj_idx in range(len(reg_inds)):
+            # Calculate fmap_size for the current FPN level
+            fmap_w = int(
+                dataset.img_size["w"]
+                / dataset.down_ratio[list(dataset.down_ratio.keys())[fpn_level_idx]]
+            )
+            fmap_h = int(
+                dataset.img_size["h"]
+                / dataset.down_ratio[list(dataset.down_ratio.keys())[fpn_level_idx]]
+            )
+
+            for obj_idx in range(len(reg_inds_level)):
                 if ind_masks[obj_idx] == 1:
-                    fmap_w = dataset.offset_size["w"]
                     center_fmap_x = (
-                        (reg_inds[obj_idx] % fmap_w + regs[obj_idx, 0])
-                        * dataset.hmap_size["w"]
-                        / dataset.offset_size["w"]
+                        reg_inds_level[obj_idx] % fmap_w + regs_level[obj_idx, 0]
                     )
                     center_fmap_y = (
-                        (reg_inds[obj_idx] // fmap_w + regs[obj_idx, 1])
-                        * dataset.hmap_size["w"]
-                        / dataset.offset_size["w"]
+                        reg_inds_level[obj_idx] // fmap_w + regs_level[obj_idx, 1]
                     )
                     ax.scatter(
                         center_fmap_x,
@@ -132,8 +154,10 @@ def visualize_dataset(root_dir, img_size=512):
         ax.axis("off")
 
         # Filter out zero entries (where ind_masks is 0)
-        valid_indices = np.where(ind_masks == 1)[0]
-        valid_regs = regs[valid_indices]
+        valid_indices = np.where(ind_masks == 1)[
+            0
+        ]  # ind_masks is not per-FPN level, but common for all objects
+        valid_regs = regs_level[valid_indices]
 
         if len(valid_indices) > 0:
             table_data = []
@@ -168,8 +192,10 @@ def visualize_dataset(root_dir, img_size=512):
 
         # Display RAF Field Magnitude (Fixed)
         ax = axes[6]
-        raf_field = data["gt_relations"][0].cpu().numpy()
-        fixed_rel_idx = PSR_KR_CAT_IDX.get("revolute-controlled", -1)
+        raf_field = (
+            data["gt_relations"][fpn_level_idx][0].cpu().numpy()
+        )  # Added [0] for batch dim
+        fixed_rel_idx = PSR_KR_CAT_IDX.get("fixed", -1)
         if fixed_rel_idx != -1 and fixed_rel_idx < raf_field.shape[0]:
             raf_field_fixed = raf_field[fixed_rel_idx]
             # Calculate magnitude of the 2D vectors
@@ -183,7 +209,9 @@ def visualize_dataset(root_dir, img_size=512):
 
         # Display RAF Weights (Fixed)
         ax = axes[7]
-        raf_weights = data["gt_relations_weights"][0].cpu().numpy()
+        raf_weights = (
+            data["gt_relations_weights"][fpn_level_idx][0].cpu().numpy()
+        )  # Added [0] for batch dim
         if fixed_rel_idx != -1 and fixed_rel_idx < raf_weights.shape[0]:
             raf_weights_fixed = raf_weights[fixed_rel_idx]
             # Sum the weights across the 2 channels (x and y components)
@@ -204,5 +232,5 @@ def visualize_dataset(root_dir, img_size=512):
 
 
 if __name__ == "__main__":
-    root_directory = "/home/cyl/Reconst/Data/PSR/deep_furniture_part1/"
+    root_directory = "/home/cyl/Reconst/Data/PSR_v2/train/"
     visualize_dataset(root_directory)

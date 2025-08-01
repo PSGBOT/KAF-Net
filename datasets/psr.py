@@ -66,7 +66,7 @@ class PSRDataset(Dataset):
         root_dir,
         split,
         split_ratio=1.0,
-        down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
+        down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
         prune=True,
     ):
@@ -98,22 +98,6 @@ class PSRDataset(Dataset):
         self.padding = 127  # 31 for resnet/resdcn
         self.down_ratio = down_ratio
         self.img_size = {"h": img_size, "w": img_size}
-        self.hmap_size = {
-            "h": img_size // self.down_ratio["hmap"],
-            "w": img_size // self.down_ratio["hmap"],
-        }
-        self.offset_size = {
-            "h": img_size // self.down_ratio["reg"],
-            "w": img_size // self.down_ratio["reg"],
-        }
-        self.wh_size = {
-            "h": img_size // self.down_ratio["wh"],
-            "w": img_size // self.down_ratio["wh"],
-        }
-        self.kaf_size = {
-            "h": img_size // self.down_ratio["kaf"],
-            "w": img_size // self.down_ratio["kaf"],
-        }
         self.gaussian_iou = 0.7
         self.rand_scales = np.arange(1, 1.4, 0.1)
         for sample_name in os.listdir(root_dir):
@@ -372,61 +356,86 @@ class PSRDataset(Dataset):
 
         # get gt for training
 
-        hmap = np.zeros(
-            (self.num_func_cat, self.hmap_size["h"], self.hmap_size["w"]),
-            dtype=np.float32,
-        )  # heatmap
-        w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
-        regs = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
-        reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
-        wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
+        hmap_ms = []  # multiscale
+        reg_ms = []
+        w_h_ms = []
+        reg_inds_ms = []
+        wh_inds_ms = []
         ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
-        obj_idx = 0
-        for mask_name, cat_dict in masks_cat.items():
-            # Get bbox info for this mask
-            bbox_info = masks_bbox[mask_name]
-            center = bbox_info["center"]  # [x, y] in image space
-            # print(center)
-            scale = bbox_info["scale"]  # [w, h] in image space
+        kaf_ms = []
+        kaf_weight_ms = []
+        for stride_key in self.down_ratio:
+            stride = self.down_ratio[stride_key]
+            fmap_size = self.img_size["w"] // stride
+            hmap = np.zeros(
+                (self.num_func_cat, fmap_size, fmap_size),
+                dtype=np.float32,
+            )  # heatmap
+            w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
+            reg = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
+            reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            obj_idx = 0
+            for mask_name, cat_dict in masks_cat.items():
+                # Get bbox info for this mask
+                bbox_info = masks_bbox[mask_name]
+                center = bbox_info["center"]  # [x, y] in image space
+                # print(center)
+                scale = bbox_info["scale"]  # [w, h] in image space
 
-            # Transform center to feature map space
-            center_fmap = [
-                float(center[0] / self.down_ratio["hmap"]),
-                float(center[1] / self.down_ratio["hmap"]),
-            ]
-            center_fmap = np.array(center_fmap, dtype=np.float32)
-            center_int = center_fmap.astype(np.int32)
-            # print(center_int)
+                # Transform center to feature map space
+                center_fmap = [
+                    float(center[0] / stride),
+                    float(center[1] / stride),
+                ]
+                center_fmap = np.array(center_fmap, dtype=np.float32)
+                center_int = center_fmap.astype(np.int32)
+                # print(center_int)
 
-            w, h = scale
+                w, h = scale
 
-            for cat_idx in cat_dict:  # cat_idx is the category index
-                if cat_dict[cat_idx] == 0:
-                    continue
-                # For each category this mask belongs to, draw a heatmap
-                radius = max(
-                    0,
-                    int(
-                        gaussian_radius((math.ceil(h), math.ceil(w)), self.gaussian_iou)
-                        / self.down_ratio["hmap"]
-                        * 2
-                    ),
+                for cat_idx in cat_dict:  # cat_idx is the category index
+                    if cat_dict[cat_idx] == 0:
+                        continue
+                    # For each category this mask belongs to, draw a heatmap
+                    radius = max(
+                        0,
+                        int(
+                            gaussian_radius(
+                                (math.ceil(h), math.ceil(w)), self.gaussian_iou
+                            )
+                            / stride
+                            * 2
+                        ),
+                    )
+                    # print(radius)
+                    draw_umich_gaussian(hmap[cat_idx], center_int, radius, 1)
+
+                if obj_idx < self.max_objs:
+                    w_h_[obj_idx] = [w, h]
+                    reg[obj_idx] = center_fmap - center_int
+                    # print(regs[obj_idx])
+                    reg_inds[obj_idx] = center_int[1] * fmap_size + center_int[0]
+                    wh_inds[obj_idx] = center_int[1] * fmap_size + center_int[0]
+                    ind_masks[obj_idx] = 1
+                    obj_idx += 1
+
+            # generate kaf with gt relations and bbox
+            with torch.no_grad():
+                raf_field, raf_weights = get_kaf(
+                    kr,
+                    masks_bbox,
+                    self.num_kr_cat,
+                    stride,
+                    (fmap_size, fmap_size),
                 )
-                # print(radius)
-                draw_umich_gaussian(hmap[cat_idx], center_int, radius, 1)
-
-            if obj_idx < self.max_objs:
-                w_h_[obj_idx] = [w, h]
-                regs[obj_idx] = center_fmap - center_int
-                # print(regs[obj_idx])
-                reg_inds[obj_idx] = (
-                    center_int[1] * self.offset_size["w"] + center_int[0]
-                ) * (self.down_ratio["hmap"] / self.down_ratio["reg"])
-                wh_inds[obj_idx] = (
-                    center_int[1] * self.wh_size["w"] + center_int[0]
-                ) * (self.down_ratio["hmap"] / self.down_ratio["wh"])
-                ind_masks[obj_idx] = 1
-                obj_idx += 1
+            hmap_ms.append(hmap)
+            reg_ms.append(reg)
+            reg_inds_ms.append(reg_inds)
+            w_h_ms.append(w_h_)
+            wh_inds_ms.append(wh_inds)
+            kaf_ms.append(raf_field.cpu())
+            kaf_weight_ms.append(raf_weights.cpu())
 
         gt_centers = np.zeros((len(masks_bbox), 2))
         gt_wh = np.zeros((len(masks_bbox), 2))
@@ -435,15 +444,6 @@ class PSRDataset(Dataset):
             gt_wh[mask_idx] = masks_bbox[mask_idx]["scale"]
         gt_centers = torch.tensor(gt_centers, device=self.device)
         gt_wh = torch.tensor(gt_wh, device=self.device)
-        # generate kaf with gt relations and bbox
-        with torch.no_grad():
-            raf_field, raf_weights = get_kaf(
-                kr,
-                masks_bbox,
-                self.num_kr_cat,
-                self.down_ratio["kaf"],
-                (self.kaf_size["h"], self.kaf_size["w"]),
-            )
 
         # for batch loading
 
@@ -469,23 +469,19 @@ class PSRDataset(Dataset):
             for cat_idx in range(self.num_func_cat):
                 masks_cat[mask_idx][cat_idx] = 0
 
-        # concatenate all the kinematic relations for batch loading
-        for rel_idx in range(len(kr), self.max_rels):
-            kr.append([-1, -1, 13])
-
         return {
             "masked_img": masked_img,
             "masks_cat": masks_cat,
             "masks_bbox_wh": gt_wh.cpu(),
             "masks_bbox_center": gt_centers.cpu(),
-            "hmap": hmap,
-            "w_h_": w_h_,
-            "wh_inds": wh_inds,
-            "regs": regs,
-            "reg_inds": reg_inds,
+            "hmap": hmap_ms,  # different scales for fpn
+            "w_h_": w_h_ms,  # different scales for fpn
+            "wh_inds": wh_inds_ms,  # different scales for fpn
+            "regs": reg_ms,  # different scales for fpn
+            "reg_inds": reg_inds_ms,  # different scales for fpn
             "ind_masks": ind_masks,
-            "gt_relations": raf_field.cpu(),
-            "gt_relations_weights": raf_weights.cpu(),
+            "gt_relations": kaf_ms,  # different scales for fpn
+            "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
         }
 
 
@@ -527,7 +523,7 @@ class PSRDataset_eval(PSRDataset):
         root_dir,
         split,
         split_ratio=1.0,
-        down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
+        down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
         prune=True,
     ):
