@@ -130,27 +130,6 @@ class GradualWarmupScheduler(_LRScheduler):
             return super(GradualWarmupScheduler, self).step(epoch)
 
 
-if __name__ == "__main__":
-    v = torch.zeros(10)
-    optim = torch.optim.SGD([v], lr=0.01)
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optim, 100, eta_min=0, last_epoch=-1
-    )
-    scheduler = GradualWarmupScheduler(
-        optim, multiplier=4, total_epoch=5, after_scheduler=cosine_scheduler
-    )
-    a = []
-    b = []
-    for epoch in range(1, 100):
-        scheduler.step(epoch)
-        a.append(epoch)
-        b.append(optim.param_groups[0]["lr"])
-        print(epoch, optim.param_groups[0]["lr"])
-
-    plt.plot(a, b)
-    plt.show()
-
-
 def main():
     import torch.multiprocessing as mp
 
@@ -579,6 +558,7 @@ def main():
         summary_writer.add_scalar("raf_loss/val", total_b_kaf_loss / num_batches, step)
         return
 
+    print(f"Use prune dataset: {cfg.prune}")
     print(f"Starting training at epoch {start_epoch}...")
     for epoch in range(start_epoch, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
