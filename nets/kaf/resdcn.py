@@ -4,7 +4,7 @@ import torch.nn as nn
 import numpy as np
 
 from lib.DCNv2.dcn_v2 import DCN
-from .fpn import get_fpn
+from nets.kaf.fpn import get_fpn
 
 BN_MOMENTUM = 0.1
 
@@ -269,8 +269,13 @@ class KAF_ResDCN(nn.Module):
         out4 = self.layer4(out3)
         p2_1, p3_1, p4_1, p5_1 = self.fpn_1([out1, out2, out3, out4])
         p2_2, p3_2, p4_2, p5_2 = self.fpn_2([out1, out2, out3, out4])
-        out = [self.hmap(p5_1), self.regs(p4_1), self.w_h_(p3_1), self.raf(p2_2)]
-        return [out]
+        out = [
+            [self.hmap(p5_1), self.hmap(p4_1), self.hmap(p3_1), self.hmap(p2_1)],
+            [self.regs(p5_1), self.regs(p4_1), self.regs(p3_1), self.regs(p2_1)],
+            [self.w_h_(p5_1), self.w_h_(p4_1), self.w_h_(p3_1), self.w_h_(p2_1)],
+            [self.raf(p5_2), self.raf(p4_2), self.raf(p3_2), self.raf(p2_2)],
+        ]
+        return out
 
     def init_weights(self, num_layers):
         print("=> init deconv weights from normal distribution")
@@ -327,7 +332,9 @@ if __name__ == "__main__":
         y = net(torch.randn(4, 4, 512, 512).cuda())
         print("Result dimensions")
         print(type(y[0]))
-        print((y[0][0].cpu().numpy()).shape)  # hmap [2,80,128,128]
-        print((y[0][1].cpu().numpy()).shape)  # reg [2,2,128,128]
-        print((y[0][2].cpu().numpy()).shape)  # wh [2,2,128,128]
-        print((y[0][3].cpu().numpy()).shape)  # raf [2,14,128,128]
+        for level in range(4):
+            print(f"FPN level: {level}")
+            print((y[0][level].cpu().numpy()).shape)  # hmap [2,80,128,128]
+            print((y[1][level].cpu().numpy()).shape)  # reg [2,2,128,128]
+            print((y[2][level].cpu().numpy()).shape)  # wh [2,2,128,128]
+            print((y[3][level].cpu().numpy()).shape)  # raf [2,14,128,128]

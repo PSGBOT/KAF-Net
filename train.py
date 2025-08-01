@@ -347,6 +347,70 @@ def main():
                 summary_writer.add_scalar("raf_loss/train", raf_loss.item(), step)
                 summary_writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
 
+    def train_fpn(epoch):
+        print("\n Epoch: %d" % epoch)
+        model.train()
+        tic = time.perf_counter()
+        for batch_idx, batch in enumerate(train_loader):
+            for k in batch:
+                if k != "meta":
+                    batch[k] = to_device(batch[k], cfg.device)
+                    # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
+
+            outputs = model(batch["masked_img"])
+            # output shape:[
+            # [hmap, reg, w_h_, raf], # intermediate output
+            # ...
+            # [hmap(tensor[B,13,W,H]), reg(tensor[B,2,W,H]), w_h_(tensor[B,2,W,H]), raf(tensor[B,28,W,H])] # final output
+            # ]
+            # hmap = [outputs[i][0] for i in range(len(outputs))]
+            hmap = [outputs[-1][0]]
+            regs = outputs[-1][1]
+            w_h_ = outputs[-1][2]
+            raf = outputs[-1][3]
+
+            regs = _tranpose_and_gather_feature(regs, batch["reg_inds"])
+            w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"])
+
+            hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
+            reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
+            w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
+            raf_loss = _raf_loss(
+                raf, batch["gt_relations"], batch["gt_relations_weights"]
+            )
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            if cfg.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+            optimizer.step()
+
+            if batch_idx % cfg.log_interval == 0:
+                duration = time.perf_counter() - tic
+                tic = time.perf_counter()
+                print(
+                    "[%d/%d-%d/%d] "
+                    % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
+                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
+                    % (
+                        hmap_loss.item(),
+                        reg_loss.item(),
+                        w_h_loss.item(),
+                        raf_loss.item(),
+                    )
+                    + " (%d samples/sec)"
+                    % (cfg.batch_size * cfg.log_interval / duration)
+                )
+
+                step = len(train_loader) * epoch + batch_idx
+                summary_writer.add_scalar("total_loss/train", loss.item(), step)
+                summary_writer.add_scalar("hmap_loss/train", hmap_loss.item(), step)
+                summary_writer.add_scalar("reg_loss/train", reg_loss.item(), step)
+                summary_writer.add_scalar("w_h_loss/train", w_h_loss.item(), step)
+                summary_writer.add_scalar("raf_loss/train", raf_loss.item(), step)
+                summary_writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
+
     @torch.no_grad()
     def val_loss_map(epoch):
         # To Do: show loss and map
@@ -416,7 +480,7 @@ def main():
     print(f"Starting training at epoch {start_epoch}...")
     for epoch in range(start_epoch, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
-        train(epoch)
+        train_fpn(epoch)
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
             val_loss_map(epoch)
         print(
