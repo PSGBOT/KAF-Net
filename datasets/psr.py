@@ -533,6 +533,6 @@ class PSRDataset_eval(PSRDataset):
             split_ratio,
             down_ratio=down_ratio,
             img_size=img_size,
-            prune=True,
+            prune=prune,
         )
         print("==> Initializing PSR Dataset for evaluation")

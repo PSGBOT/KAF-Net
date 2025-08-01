@@ -288,7 +288,7 @@ def visualize_raf_features(gt_rafs, gt_raf_weights):
             cv2.imwrite(final_combined_color_filename, final_combined_color_image)
 
 
-def _raf_loss(rafs, gt_rafs, gt_raf_weights):
+def _kaf_loss(rafs, gt_rafs, gt_raf_weights):
     """Raf loss. Exactly the same as fcsgg.
     Arguments:
       preds: (B x r*2 x h x w)

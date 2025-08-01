@@ -13,7 +13,7 @@ import numpy as np
 # from datasets.coco import COCO, COCO_eval
 # from datasets.pascal import PascalVOC, PascalVOC_eval
 from datasets.psr import PSRDataset, PSRDataset_eval
-from nets.raf_loss import _raf_loss
+from nets.raf_loss import _kaf_loss
 from nets.kaf.resdcn import get_kaf_resdcn
 from nets.kaf.hourglass import get_kaf_hourglass
 from nets.kaf.HRnet import get_kaf_hrnet
@@ -65,7 +65,7 @@ parser.add_argument("--test_topk", type=int, default=100)
 parser.add_argument("--log_interval", type=int, default=100)
 parser.add_argument("--val_interval", type=int, default=5)
 parser.add_argument("--num_workers", type=int, default=2)
-parser.add_argument("--prune", type=bool, default=True)
+parser.add_argument("--prune", type=bool, default=False)
 
 cfg = parser.parse_args()
 
@@ -185,13 +185,13 @@ def main():
         cfg.device = torch.device("cuda")
     print("Setting up data...")
     if "hourglass" in cfg.arch:
-        down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
+        down_ratio = {"p2": 4}
     elif "resdcn" in cfg.arch:
-        down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif "hrnet" in cfg.arch:
-        down_ratio = {"hmap": 4, "wh": 4, "reg": 4, "kaf": 4}
+        down_ratio = {"p2": 4}
     elif "resnet" in cfg.arch:
-        down_ratio = {"hmap": 32, "wh": 8, "reg": 16, "kaf": 4}
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     else:
         raise NotImplementedError
     Dataset = PSRDataset
@@ -311,7 +311,7 @@ def main():
             hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
             w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
-            raf_loss = _raf_loss(
+            raf_loss = _kaf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
             loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
@@ -364,21 +364,41 @@ def main():
             # [hmap(tensor[B,13,W,H]), reg(tensor[B,2,W,H]), w_h_(tensor[B,2,W,H]), raf(tensor[B,28,W,H])] # final output
             # ]
             # hmap = [outputs[i][0] for i in range(len(outputs))]
-            hmap = [outputs[-1][0]]
-            regs = outputs[-1][1]
-            w_h_ = outputs[-1][2]
-            raf = outputs[-1][3]
 
-            regs = _tranpose_and_gather_feature(regs, batch["reg_inds"])
-            w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"])
+            total_hmap_loss = 0
+            total_reg_loss = 0
+            total_wh_loss = 0
+            total_kaf_loss = 0
+            for stride_idx in range(len(down_ratio)):
+                hmap = [outputs[0][stride_idx]]
+                regs = outputs[1][stride_idx]
+                w_h_ = outputs[2][stride_idx]
+                raf = outputs[3][stride_idx]
 
-            hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
-            reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
-            w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
-            raf_loss = _raf_loss(
-                raf, batch["gt_relations"], batch["gt_relations_weights"]
-            )
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
+                regs = _tranpose_and_gather_feature(regs, batch["reg_inds"][stride_idx])
+                w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"][stride_idx])
+
+                hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][stride_idx])
+                reg_loss = _reg_loss(
+                    regs, batch["regs"][stride_idx], batch["ind_masks"]
+                )
+                w_h_loss = _reg_loss(
+                    w_h_, batch["w_h_"][stride_idx], batch["ind_masks"]
+                )
+                kaf_loss = _kaf_loss(
+                    raf,
+                    batch["gt_relations"][stride_idx],
+                    batch["gt_relations_weights"][stride_idx],
+                )
+                total_hmap_loss += hmap_loss
+                total_reg_loss += reg_loss
+                total_wh_loss += w_h_loss
+                total_kaf_loss += kaf_loss
+            hmap_loss = total_hmap_loss / len(down_ratio)
+            reg_loss = total_reg_loss / len(down_ratio)
+            w_h_loss = total_wh_loss / len(down_ratio)
+            kaf_loss = total_kaf_loss / len(down_ratio)
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * kaf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -397,7 +417,7 @@ def main():
                         hmap_loss.item(),
                         reg_loss.item(),
                         w_h_loss.item(),
-                        raf_loss.item(),
+                        kaf_loss.item(),
                     )
                     + " (%d samples/sec)"
                     % (cfg.batch_size * cfg.log_interval / duration)
@@ -408,7 +428,7 @@ def main():
                 summary_writer.add_scalar("hmap_loss/train", hmap_loss.item(), step)
                 summary_writer.add_scalar("reg_loss/train", reg_loss.item(), step)
                 summary_writer.add_scalar("w_h_loss/train", w_h_loss.item(), step)
-                summary_writer.add_scalar("raf_loss/train", raf_loss.item(), step)
+                summary_writer.add_scalar("raf_loss/train", kaf_loss.item(), step)
                 summary_writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
 
     @torch.no_grad()
@@ -447,7 +467,7 @@ def main():
             hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"])
             reg_loss = _reg_loss(regs, batch["regs"], batch["ind_masks"])
             w_h_loss = _reg_loss(w_h_, batch["w_h_"], batch["ind_masks"])
-            raf_loss = _raf_loss(
+            raf_loss = _kaf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
             loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
@@ -477,12 +497,94 @@ def main():
         summary_writer.add_scalar("raf_loss/val", total_raf_loss / num_batches, step)
         return
 
+    @torch.no_grad()
+    def val_loss_map_fpn(epoch):
+        # To Do: show loss and map
+        print("\n Val@Epoch: %d" % epoch)
+        model.eval()
+        torch.cuda.empty_cache()
+        total_b_hmap_loss = 0
+        total_b_reg_loss = 0
+        total_b_w_h_loss = 0
+        total_b_kaf_loss = 0
+        total_b_loss = 0
+        num_batches = len(val_loader)
+        for batch_idx, batch in enumerate(val_loader):
+            for k in batch:
+                if k != "meta":
+                    batch[k] = to_device(batch[k], cfg.device)
+                    # batch[k] = batch[k].to(device=cfg.device, non_blocking=True)
+
+            outputs = model(batch["masked_img"])
+            total_hmap_loss = 0
+            total_reg_loss = 0
+            total_wh_loss = 0
+            total_kaf_loss = 0
+            for stride_idx in range(len(down_ratio)):
+                hmap = [outputs[0][stride_idx]]
+                regs = outputs[1][stride_idx]
+                w_h_ = outputs[2][stride_idx]
+                raf = outputs[3][stride_idx]
+
+                regs = _tranpose_and_gather_feature(regs, batch["reg_inds"][stride_idx])
+                w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"][stride_idx])
+
+                hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][stride_idx])
+                reg_loss = _reg_loss(
+                    regs, batch["regs"][stride_idx], batch["ind_masks"]
+                )
+                w_h_loss = _reg_loss(
+                    w_h_, batch["w_h_"][stride_idx], batch["ind_masks"]
+                )
+                kaf_loss = _kaf_loss(
+                    raf,
+                    batch["gt_relations"][stride_idx],
+                    batch["gt_relations_weights"][stride_idx],
+                )
+                total_hmap_loss += hmap_loss
+                total_reg_loss += reg_loss
+                total_wh_loss += w_h_loss
+                total_kaf_loss += kaf_loss
+            hmap_loss = total_hmap_loss / len(down_ratio)
+            reg_loss = total_reg_loss / len(down_ratio)
+            w_h_loss = total_wh_loss / len(down_ratio)
+            kaf_loss = total_kaf_loss / len(down_ratio)
+            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * kaf_loss
+
+            total_b_hmap_loss += hmap_loss.item()
+            total_b_reg_loss += reg_loss.item()
+            total_b_w_h_loss += w_h_loss.item()
+            total_b_kaf_loss += kaf_loss.item()
+            total_b_loss += loss.item()
+
+            if batch_idx % cfg.log_interval == 0:
+                print(
+                    "[%d/%d-%d/%d] "
+                    % (epoch, cfg.num_epochs, batch_idx, len(val_loader))
+                    + " hmap_loss= %.5f reg_loss= %.5f w_h_loss= %.5f raf_loss= %.5f"
+                    % (
+                        hmap_loss.item(),
+                        reg_loss.item(),
+                        w_h_loss.item(),
+                        kaf_loss.item(),
+                    )
+                )
+        step = len(train_loader) * epoch
+        summary_writer.add_scalar("total_loss/val", total_b_loss / num_batches, step)
+        summary_writer.add_scalar(
+            "hmap_loss/val", total_b_hmap_loss / num_batches, step
+        )
+        summary_writer.add_scalar("reg_loss/val", total_b_reg_loss / num_batches, step)
+        summary_writer.add_scalar("w_h_loss/val", total_b_w_h_loss / num_batches, step)
+        summary_writer.add_scalar("raf_loss/val", total_b_kaf_loss / num_batches, step)
+        return
+
     print(f"Starting training at epoch {start_epoch}...")
     for epoch in range(start_epoch, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
         train_fpn(epoch)
         if cfg.val_interval > 0 and epoch % cfg.val_interval == 0:
-            val_loss_map(epoch)
+            val_loss_map_fpn(epoch)
         print(
             saver.save(
                 {
