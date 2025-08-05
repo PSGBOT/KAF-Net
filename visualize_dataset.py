@@ -16,9 +16,9 @@ def visualize_dataset(root_dir, img_size=512):
     for i, data in enumerate(dataloader):
         masked_img = data["masked_img"][0].numpy()  # Get the first image from the batch
 
-        # Define extended mean and std for 4 channels (RGB + Mask)
-        extended_mean = np.array(PSR_MEAN + [0.0]).reshape(4, 1, 1)
-        extended_std = np.array(PSR_STD + [1.0]).reshape(4, 1, 1)
+        # Define extended mean and std for 6 channels (3 RGB + 3 mask RGB)
+        extended_mean = np.array(PSR_MEAN + [0.0, 0.0, 0.0]).reshape(6, 1, 1)
+        extended_std = np.array(PSR_STD + [1.0, 1.0, 1.0]).reshape(6, 1, 1)
 
         # Unnormalize the masked_img
         unnormalized_masked_img = masked_img * extended_std + extended_mean
@@ -32,8 +32,8 @@ def visualize_dataset(root_dir, img_size=512):
         )  # This line is correct as is
 
         # Visualize each channel
-        # Changed from 1,6 to 2,4 to accommodate new plots
-        fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+        # Changed to 3,4 to accommodate RGB image, RGB mask, and analysis plots
+        fig, axes = plt.subplots(3, 4, figsize=(24, 18))
         hmap = data["hmap"][0][0].numpy()  # Added [0] for batch dim
         regs = data["regs"][0][0].numpy()  # Added [0] for batch dim
         reg_inds = data["reg_inds"][0][0].numpy()  # Added [0] for batch dim
@@ -58,62 +58,87 @@ def visualize_dataset(root_dir, img_size=512):
             0
         ].numpy()  # Added [0] for batch dim
 
-        # Changed from 2,3 to 2,4 to accommodate new plots
-        fig, axes = plt.subplots(2, 4, figsize=(24, 12))
         axes = axes.flatten()
         titles = [
-            "Red Channel",
-            "Green Channel",
-            "Blue Channel",
-            "Mask Channel",
+            "Original RGB Image",
+            "Red Channel (Original)",
+            "Green Channel (Original)",
+            "Blue Channel (Original)",
+            "Colored Masks RGB",
+            "Red Channel (Masks)",
+            "Green Channel (Masks)",
+            "Blue Channel (Masks)",
             "Hmap (Housing Category)",
             "Width/Height & Regs",
             "RAF Field Magnitude (Fixed)",  # New title
             "RAF Weights (Fixed)",  # New title
         ]
 
-        # Display RGB and Mask channels
-        for channel_idx in range(4):
-            ax = axes[channel_idx]
+        # Display original RGB image (combined)
+        ax = axes[0]
+        original_rgb = unnormalized_masked_img[:, :, :3]
+        ax.imshow(original_rgb)
+        ax.set_title(titles[0])
+        ax.axis("off")
+
+        # Display individual original RGB channels
+        for channel_idx in range(3):
+            ax = axes[channel_idx + 1]
             ax.imshow(unnormalized_masked_img[:, :, channel_idx], cmap="gray")
-            ax.set_title(titles[channel_idx])
+            ax.set_title(titles[channel_idx + 1])
             ax.axis("off")
 
-            if channel_idx == 3:  # Mask channel
-                for idx in range(len(part_centers)):  # Loop over part:
-                    ax.scatter(
-                        part_centers[idx][0],
-                        part_centers[idx][1],
-                        color="red",
-                        marker="x",
-                        s=100,
-                        linewidths=2,
-                        label=idx,
-                    )
-                    width_bbox = part_scales[idx][0]
-                    height_bbox = part_scales[idx][1]
-                    x_min = part_centers[idx][0] - width_bbox / 2
-                    y_min = part_centers[idx][1] - height_bbox / 2
+        # Display colored masks RGB (combined)
+        ax = axes[4]
+        mask_rgb = unnormalized_masked_img[:, :, 3:6]
+        ax.imshow(mask_rgb)
+        ax.set_title(titles[4])
+        ax.axis("off")
 
-                    rect = plt.Rectangle(
-                        (x_min, y_min),
-                        width_bbox,
-                        height_bbox,
-                        linewidth=1,
-                        edgecolor="cyan",
-                        facecolor="none",
-                    )
-                    ax.add_patch(rect)
-                ax.legend()
+        # Add part centers and bounding boxes to the colored masks view
+        for idx in range(len(part_centers)):
+            ax.scatter(
+                part_centers[idx][0],
+                part_centers[idx][1],
+                color="white",
+                marker="x",
+                s=100,
+                linewidths=2,
+                label=f"Part {idx}",
+            )
+            width_bbox = part_scales[idx][0]
+            height_bbox = part_scales[idx][1]
+            x_min = part_centers[idx][0] - width_bbox / 2
+            y_min = part_centers[idx][1] - height_bbox / 2
+
+            rect = plt.Rectangle(
+                (x_min, y_min),
+                width_bbox,
+                height_bbox,
+                linewidth=2,
+                edgecolor="white",
+                facecolor="none",
+            )
+            ax.add_patch(rect)
+        if len(part_centers) > 0:
+            ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+
+        # Display individual mask RGB channels
+        for channel_idx in range(3):
+            ax = axes[channel_idx]
+            ax = axes[channel_idx + 5]
+            ax.imshow(unnormalized_masked_img[:, :, channel_idx + 3], cmap="gray")
+            ax.set_title(titles[channel_idx + 5])
+            ax.axis("off")
 
         # Display Hmap for a specific category (e.g., 'door' which is index 11)
-        ax = axes[4]
+        ax = axes[8]
         # Assuming 'door' is at index 11 in PSR_FUNC_CAT
         # You might want to make this dynamic or configurable, using 'housing' as an example
         door_hmap_idx = dataset.func_cat_ids.get("housing", -1)
         if door_hmap_idx != -1 and hmap_level.shape[0] > door_hmap_idx:
             ax.imshow(hmap_level[door_hmap_idx], cmap="hot", alpha=1)
-            ax.set_title(titles[4])
+            ax.set_title(titles[8])
             ax.axis("off")
 
             # Overlay center points from inds and regs on the heatmap
@@ -145,12 +170,12 @@ def visualize_dataset(root_dir, img_size=512):
                         linewidths=1,
                     )
         else:
-            ax.set_title(f"{titles[4]} (Not Available)")
+            ax.set_title(f"{titles[8]} (Not Available)")
             ax.axis("off")
 
         # Display w_h_ and regs
-        ax = axes[5]
-        ax.set_title(titles[5])
+        ax = axes[9]
+        ax.set_title(titles[9])
         ax.axis("off")
 
         # Filter out zero entries (where ind_masks is 0)
@@ -179,7 +204,7 @@ def visualize_dataset(root_dir, img_size=512):
                 loc="center",
                 cellLoc="center",
             )
-            ax.set_title(titles[5])
+            ax.set_title(titles[9])
         else:
             ax.text(
                 0.5,
@@ -191,7 +216,7 @@ def visualize_dataset(root_dir, img_size=512):
             )
 
         # Display RAF Field Magnitude (Fixed)
-        ax = axes[6]
+        ax = axes[10]
         raf_field = (
             data["gt_relations"][fpn_level_idx][0].cpu().numpy()
         )  # Added [0] for batch dim
@@ -201,14 +226,14 @@ def visualize_dataset(root_dir, img_size=512):
             # Calculate magnitude of the 2D vectors
             raf_magnitude = np.linalg.norm(raf_field_fixed, axis=0)
             ax.imshow(raf_magnitude, cmap="viridis")
-            ax.set_title(titles[6])
+            ax.set_title(titles[10])
             ax.axis("off")
         else:
-            ax.set_title(f"{titles[6]} (Not Available)")
+            ax.set_title(f"{titles[10]} (Not Available)")
             ax.axis("off")
 
         # Display RAF Weights (Fixed)
-        ax = axes[7]
+        ax = axes[11]
         raf_weights = (
             data["gt_relations_weights"][fpn_level_idx][0].cpu().numpy()
         )  # Added [0] for batch dim
@@ -217,10 +242,10 @@ def visualize_dataset(root_dir, img_size=512):
             # Sum the weights across the 2 channels (x and y components)
             raf_weights_sum = np.sum(raf_weights_fixed, axis=0)
             ax.imshow(raf_weights_sum, cmap="hot")
-            ax.set_title(titles[7])
+            ax.set_title(titles[11])
             ax.axis("off")
         else:
-            ax.set_title(f"{titles[7]} (Not Available)")
+            ax.set_title(f"{titles[11]} (Not Available)")
             ax.axis("off")
 
         plt.suptitle(f"Dataset Visualization Sample {i + 1}")
