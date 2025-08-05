@@ -293,7 +293,7 @@ def main():
             raf_loss = _kaf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
+            loss = raf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -377,7 +377,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * kaf_loss
+            loss = kaf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -449,7 +449,7 @@ def main():
             raf_loss = _kaf_loss(
                 raf, batch["gt_relations"], batch["gt_relations_weights"]
             )
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * raf_loss
+            loss = raf_loss
             total_hmap_loss += hmap_final_loss.item()
             total_reg_loss += reg_loss.item()
             total_w_h_loss += w_h_loss.item()
@@ -528,7 +528,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * kaf_loss
+            loss = kaf_loss
 
             total_b_hmap_loss += hmap_loss.item()
             total_b_reg_loss += reg_loss.item()
