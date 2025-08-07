@@ -1,6 +1,7 @@
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
+from utils.utils import _tranpose_and_gather_feature, load_model
 
 from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD, PSR_KR_CAT_IDX
 
@@ -37,6 +38,7 @@ def visualize_dataset(root_dir, img_size=512):
         hmap = data["hmap"][0][0].numpy()  # Added [0] for batch dim
         regs = data["regs"][0][0].numpy()  # Added [0] for batch dim
         reg_inds = data["reg_inds"][0][0].numpy()  # Added [0] for batch dim
+        wh = data["w_h_"][0][0].numpy()  # Added [0] for batch dim
         wh_inds = data["wh_inds"][0][0].numpy()  # Added [0] for batch dim
         ind_masks = data["ind_masks"][0].numpy()
         part_centers = (
@@ -46,17 +48,22 @@ def visualize_dataset(root_dir, img_size=512):
             data["masks_bbox_wh"][0][ind_masks == 1].cpu().numpy()
         )  # Corrected filtering and added [0] for batch dim
         print(part_centers)
+        print(part_scales)
 
         # Select a specific FPN level for visualization (e.g., the coarsest level, which is the first one in the list)
         fpn_level_idx = 2
         hmap_level = data["hmap"][fpn_level_idx][0].numpy()  # Added [0] for batch dim
+        print(data["hmap"][1].shape)
         regs_level = data["regs"][fpn_level_idx][0].numpy()  # Added [0] for batch dim
+        wh_level = data["w_h_"][fpn_level_idx][0].numpy()  # Added [0] for batch dim
         reg_inds_level = data["reg_inds"][fpn_level_idx][
             0
         ].numpy()  # Added [0] for batch dim
         wh_inds_level = data["wh_inds"][fpn_level_idx][
             0
         ].numpy()  # Added [0] for batch dim
+        print(wh_level[wh_inds_level >= 1])
+        print(wh_inds_level[wh_inds_level >= 1])
 
         axes = axes.flatten()
         titles = [

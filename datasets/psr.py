@@ -9,6 +9,7 @@ import math
 from utils.image import get_affine_transform, color_aug
 from utils.image import draw_umich_gaussian, gaussian_radius
 from datasets.utils.kaf_gen import get_kaf
+from datasets.utils.augimg import generate_mask_colors
 
 PSR_FUNC_CAT = [
     "other",  # 0
@@ -58,34 +59,6 @@ PSR_EIGEN_VECTORS = [
 
 def maskname_to_index(maskname="mask0"):
     return int(maskname.split("mask")[1])
-
-
-def generate_mask_colors(num_masks, max_masks=128):
-    """
-    Generate distinct RGB colors for different masks.
-    Uses HSV color space to ensure good color separation.
-    """
-    import colorsys
-
-    colors = []
-
-    # Special case for background (index 0) - use black
-    colors.append([0.0, 0.0, 0.0])
-
-    # Generate colors for masks using HSV space for better distribution
-    for i in range(1, max_masks + 1):
-        if i <= num_masks:
-            # Use golden ratio to distribute hues evenly
-            hue = (i * 0.618033988749895) % 1.0
-            saturation = 0.8 + 0.2 * ((i % 3) / 2)  # Vary saturation slightly
-            value = 0.8 + 0.2 * (i % 2)  # Vary brightness slightly
-            rgb = colorsys.hsv_to_rgb(hue, saturation, value)
-        else:
-            # For unused mask indices, use black
-            rgb = (0.0, 0.0, 0.0)
-        colors.append(list(rgb))
-
-    return colors
 
 
 class PSRDataset(Dataset):
@@ -194,7 +167,6 @@ class PSRDataset(Dataset):
         mask_colors = generate_mask_colors(num_masks, self.max_objs)
 
         if os.path.exists(masks_dir):
-            all_contours = []
             # Store individual masks for overlap resolution
             individual_masks = {}
 
@@ -235,13 +207,6 @@ class PSRDataset(Dataset):
                     "center": mask_center,
                     "scale": [mask_width, mask_height],
                 }
-
-                kernel = np.ones((3, 3), np.uint8)
-                erode_mask = cv2.erode(mask, kernel, iterations=1)
-                contours, _ = cv2.findContours(
-                    erode_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                all_contours.extend(contours)
 
                 # Store the processed mask for overlap resolution
                 individual_masks[mask_index] = (mask_binary > 0).astype(np.uint8)
@@ -558,7 +523,7 @@ class PSRDataset(Dataset):
             "masks_bbox_wh": gt_wh.cpu(),
             "masks_bbox_center": gt_centers.cpu(),
             "hmap": hmap_ms,  # different scales for fpn
-            "w_h_": w_h_ms,  # different scales for fpn
+            "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
             "wh_inds": wh_inds_ms,  # different scales for fpn
             "regs": reg_ms,  # different scales for fpn
             "reg_inds": reg_inds_ms,  # different scales for fpn
