@@ -9,6 +9,7 @@ import math
 from utils.image import get_affine_transform, color_aug
 from utils.image import draw_umich_gaussian, gaussian_radius
 from datasets.utils.kaf_gen import get_kaf
+from datasets.utils.augimg import generate_mask_colors
 
 PSR_FUNC_CAT = [
     "other",  # 0
@@ -66,13 +67,15 @@ class PSRDataset(Dataset):
         root_dir,
         split,
         split_ratio=1.0,
-        down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
+        down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
+        prune=True,
     ):
         print("==> Initializing PSR Dataset")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.root_dir = root_dir
         self.samples = []
+        self.prune = prune
 
         self.func_cat = PSR_FUNC_CAT
         self.func_cat_ids = PSR_FUNC_CAT_IDX
@@ -96,22 +99,6 @@ class PSRDataset(Dataset):
         self.padding = 127  # 31 for resnet/resdcn
         self.down_ratio = down_ratio
         self.img_size = {"h": img_size, "w": img_size}
-        self.hmap_size = {
-            "h": img_size // self.down_ratio["hmap"],
-            "w": img_size // self.down_ratio["hmap"],
-        }
-        self.offset_size = {
-            "h": img_size // self.down_ratio["reg"],
-            "w": img_size // self.down_ratio["reg"],
-        }
-        self.wh_size = {
-            "h": img_size // self.down_ratio["wh"],
-            "w": img_size // self.down_ratio["wh"],
-        }
-        self.kaf_size = {
-            "h": img_size // self.down_ratio["kaf"],
-            "w": img_size // self.down_ratio["kaf"],
-        }
         self.gaussian_iou = 0.7
         self.rand_scales = np.arange(1, 1.4, 0.1)
         for sample_name in os.listdir(root_dir):
@@ -165,102 +152,152 @@ class PSRDataset(Dataset):
             flags=cv2.INTER_LINEAR,
         )
 
-        # Initialize an empty mask channel
-        combined_masks_channel = np.zeros(
-            (self.img_size["h"], self.img_size["w"]), dtype=np.uint8
+        # Initialize 3 RGB channels for masks
+        combined_masks_channels = np.zeros(
+            (self.img_size["h"], self.img_size["w"], 3), dtype=np.float32
         )
 
         # Load and process individual masks
         masks_dir = sample_path
         masks_bbox = {}
+
+        # Count total masks first to generate appropriate colors
+        mask_files = [f for f in os.listdir(masks_dir) if f.startswith("mask")]
+        num_masks = len(mask_files)
+        mask_colors = generate_mask_colors(num_masks, self.max_objs)
+
         if os.path.exists(masks_dir):
-            all_contours = []
-            for mask_filename in os.listdir(masks_dir):
-                if mask_filename.startswith(
-                    "mask"
-                ):  # Assuming masks: "mask0.png" "mask1.png"...
-                    mask_path = os.path.join(masks_dir, mask_filename)
-                    mask = Image.open(mask_path).convert("L")  # Load as grayscale
-                    # Resize mask to original image size before any transformations
-                    mask = mask.resize((width, height), Image.BILINEAR)
-                    mask = np.asarray(mask)
+            # Store individual masks for overlap resolution
+            individual_masks = {}
 
-                    # Apply the same flipping as src_img
-                    if flipped:
-                        mask = mask[:, ::-1]
+            # First pass: load all masks without combining
+            for mask_filename in mask_files:
+                mask_path = os.path.join(masks_dir, mask_filename)
+                mask = Image.open(mask_path).convert("L")  # Load as grayscale
+                # Resize mask to original image size before any transformations
+                mask = mask.resize((width, height), Image.BILINEAR)
+                mask = np.asarray(mask)
 
-                    # Apply the same affine transform as src_img
-                    mask = cv2.warpAffine(
-                        mask,
-                        trans_img,
-                        (self.img_size["w"], self.img_size["h"]),
-                        flags=cv2.INTER_LINEAR,
-                    )
+                # Apply the same flipping as src_img
+                if flipped:
+                    mask = mask[:, ::-1]
 
-                    # Now, process the mask to set border to 128 and inside to 255
-                    # Ensure mask is binary (0 or 255) for findContours
-                    mask_binary = (mask > 0).astype(np.uint8) * 255
+                # Apply the same affine transform as src_img
+                mask = cv2.warpAffine(
+                    mask,
+                    trans_img,
+                    (self.img_size["w"], self.img_size["h"]),
+                    flags=cv2.INTER_LINEAR,
+                )
 
-                    # find bbox scale of the mask
-                    bbox = cv2.boundingRect(mask_binary)
-                    # get the height and width
+                # Now, process the mask to set border to 128 and inside to 255
+                # Ensure mask is binary (0 or 255) for findContours
+                mask_binary = (mask > 0).astype(np.uint8) * 255
+
+                # find bbox scale of the mask
+                bbox = cv2.boundingRect(mask_binary)
+                # get the height and width
+                mask_height = bbox[3]
+                mask_width = bbox[2]
+                # get the center
+                mask_center = (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
+
+                mask_index = maskname_to_index(os.path.splitext(mask_filename)[0])
+                masks_bbox[mask_index] = {
+                    "center": mask_center,
+                    "scale": [mask_width, mask_height],
+                }
+
+                # Store the processed mask for overlap resolution
+                individual_masks[mask_index] = (mask_binary > 0).astype(np.uint8)
+
+            # Second pass: resolve overlaps using boolean subtraction
+            # Lower index masks have priority over higher index masks
+            resolved_masks = {}
+            sorted_mask_indices = sorted(individual_masks.keys())
+
+            for i, mask_idx in enumerate(sorted_mask_indices):
+                current_mask = individual_masks[mask_idx].copy()
+
+                # Subtract all previously processed masks (lower indices have priority)
+                for j in range(i):
+                    prev_mask_idx = sorted_mask_indices[j]
+                    if prev_mask_idx in resolved_masks:
+                        # Boolean subtraction: current_mask = current_mask AND NOT prev_mask
+                        current_mask = cv2.bitwise_and(
+                            current_mask, cv2.bitwise_not(resolved_masks[prev_mask_idx])
+                        )
+
+                resolved_masks[mask_idx] = current_mask
+
+                # Update bbox information based on resolved mask
+                if np.any(current_mask):
+                    bbox = cv2.boundingRect(current_mask)
                     mask_height = bbox[3]
                     mask_width = bbox[2]
-                    # get the center
                     mask_center = (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
 
-                    masks_bbox[
-                        maskname_to_index(os.path.splitext(mask_filename)[0])
-                    ] = {
+                    masks_bbox[mask_idx] = {
                         "center": mask_center,
                         "scale": [mask_width, mask_height],
                     }
+                else:
+                    # If mask is completely removed by subtraction, set empty bbox
+                    masks_bbox[mask_idx] = {
+                        "center": (0, 0),
+                        "scale": [0, 0],
+                    }
 
-                    kernel = np.ones((3, 3), np.uint8)
-                    erode_mask = cv2.erode(mask, kernel, iterations=1)
-                    contours, _ = cv2.findContours(
-                        erode_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    all_contours.extend(contours)
+            # Third pass: create colored mask channels using resolved masks
+            for mask_idx in resolved_masks:
+                # Get the color for this mask (ensure mask_index + 1 for proper color mapping)
+                color = mask_colors[min(mask_idx + 1, len(mask_colors) - 1)]
 
-                    # Combine with overall combined_masks_channel
-                    combined_masks_channel = np.maximum(
-                        combined_masks_channel, mask_binary
+                # Create colored mask
+                mask_normalized = resolved_masks[mask_idx].astype(np.float32)
+                for c in range(3):  # RGB channels
+                    channel_mask = mask_normalized * color[c]
+                    # Use maximum to overlay masks (brightest color wins)
+                    combined_masks_channels[:, :, c] = np.maximum(
+                        combined_masks_channels[:, :, c], channel_mask
                     )
-                cv2.drawContours(combined_masks_channel, all_contours, -1, (128,), 3)
 
         # Convert src_img and combined_masks_channel to float and normalize to 0-1
         src_img = src_img.astype(np.float32) / 255.0
-        combined_masks_channel = combined_masks_channel.astype(np.float32) / 255.0
 
-        # Concatenate along the channel dimension to create a 4-channel masked_img
+        # Concatenate along the channel dimension to create a 6-channel masked_img (3 RGB + 3 mask RGB)
         masked_img = np.concatenate(
-            (src_img, combined_masks_channel[:, :, np.newaxis]), axis=2
-        )  # [H, W, C+1]
+            (src_img, combined_masks_channels), axis=2
+        )  # [H, W, 6]
 
         # Color augmentation (applied only to the first 3 RGB channels of masked_img)
         if self.split == "train":
             color_aug(self.data_rng, masked_img[:, :, :3], self.eig_val, self.eig_vec)
 
         # Normalize and transpose (applied to all channels)
-        # Extend mean and std for the 4th channel (mask channel has 0 mean and 1 std)
+        # Extend mean and std for the mask channels (mask channels have 0 mean and 1 std)
         extended_mean = np.concatenate(
-            (self.mean, np.array([0.0], dtype=np.float32)[None, None, :]), axis=2
+            (self.mean, np.array([0.0, 0.0, 0.0], dtype=np.float32)[None, None, :]),
+            axis=2,
         )
         extended_std = np.concatenate(
-            (self.std, np.array([1.0], dtype=np.float32)[None, None, :]), axis=2
+            (self.std, np.array([1.0, 1.0, 1.0], dtype=np.float32)[None, None, :]),
+            axis=2,
         )
 
         masked_img -= extended_mean
         masked_img /= extended_std
-        masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, C+1] to [C+1, H, W]
+        masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, 6] to [6, H, W]
         return masked_img, masks_bbox
 
     def __getitem__(self, idx):
         sample_path = self.samples[idx]
 
         # Load config.json
-        config_path = os.path.join(sample_path, "config.json")
+        if self.prune:
+            config_path = os.path.join(sample_path, "pruned_config.json")
+        else:
+            config_path = os.path.join(sample_path, "config.json")
         with open(config_path, "r") as f:
             config = json.load(f)
 
@@ -367,61 +404,86 @@ class PSRDataset(Dataset):
 
         # get gt for training
 
-        hmap = np.zeros(
-            (self.num_func_cat, self.hmap_size["h"], self.hmap_size["w"]),
-            dtype=np.float32,
-        )  # heatmap
-        w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
-        regs = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
-        reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
-        wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
+        hmap_ms = []  # multiscale
+        reg_ms = []
+        w_h_ms = []
+        reg_inds_ms = []
+        wh_inds_ms = []
         ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
-        obj_idx = 0
-        for mask_name, cat_dict in masks_cat.items():
-            # Get bbox info for this mask
-            bbox_info = masks_bbox[mask_name]
-            center = bbox_info["center"]  # [x, y] in image space
-            # print(center)
-            scale = bbox_info["scale"]  # [w, h] in image space
+        kaf_ms = []
+        kaf_weight_ms = []
+        for stride_key in self.down_ratio:
+            stride = self.down_ratio[stride_key]
+            fmap_size = self.img_size["w"] // stride
+            hmap = np.zeros(
+                (self.num_func_cat, fmap_size, fmap_size),
+                dtype=np.float32,
+            )  # heatmap
+            w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
+            reg = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
+            reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            obj_idx = 0
+            for mask_name, cat_dict in masks_cat.items():
+                # Get bbox info for this mask
+                bbox_info = masks_bbox[mask_name]
+                center = bbox_info["center"]  # [x, y] in image space
+                # print(center)
+                scale = bbox_info["scale"]  # [w, h] in image space
 
-            # Transform center to feature map space
-            center_fmap = [
-                float(center[0] / self.down_ratio["hmap"]),
-                float(center[1] / self.down_ratio["hmap"]),
-            ]
-            center_fmap = np.array(center_fmap, dtype=np.float32)
-            center_int = center_fmap.astype(np.int32)
-            # print(center_int)
+                # Transform center to feature map space
+                center_fmap = [
+                    float(center[0] / stride),
+                    float(center[1] / stride),
+                ]
+                center_fmap = np.array(center_fmap, dtype=np.float32)
+                center_int = center_fmap.astype(np.int32)
+                # print(center_int)
 
-            w, h = scale
+                w, h = scale
 
-            for cat_idx in cat_dict:  # cat_idx is the category index
-                if cat_dict[cat_idx] == 0:
-                    continue
-                # For each category this mask belongs to, draw a heatmap
-                radius = max(
-                    0,
-                    int(
-                        gaussian_radius((math.ceil(h), math.ceil(w)), self.gaussian_iou)
-                        / self.down_ratio["hmap"]
-                        * 2
-                    ),
+                for cat_idx in cat_dict:  # cat_idx is the category index
+                    if cat_dict[cat_idx] == 0:
+                        continue
+                    # For each category this mask belongs to, draw a heatmap
+                    radius = max(
+                        0,
+                        int(
+                            gaussian_radius(
+                                (math.ceil(h), math.ceil(w)), self.gaussian_iou
+                            )
+                            / stride
+                            * 2
+                        ),
+                    )
+                    # print(radius)
+                    draw_umich_gaussian(hmap[cat_idx], center_int, radius, 1)
+
+                if obj_idx < self.max_objs:
+                    w_h_[obj_idx] = [w, h]
+                    reg[obj_idx] = center_fmap - center_int
+                    # print(regs[obj_idx])
+                    reg_inds[obj_idx] = center_int[1] * fmap_size + center_int[0]
+                    wh_inds[obj_idx] = center_int[1] * fmap_size + center_int[0]
+                    ind_masks[obj_idx] = 1
+                    obj_idx += 1
+
+            # generate kaf with gt relations and bbox
+            with torch.no_grad():
+                raf_field, raf_weights = get_kaf(
+                    kr,
+                    masks_bbox,
+                    self.num_kr_cat,
+                    stride,
+                    (fmap_size, fmap_size),
                 )
-                # print(radius)
-                draw_umich_gaussian(hmap[cat_idx], center_int, radius, 1)
-
-            if obj_idx < self.max_objs:
-                w_h_[obj_idx] = [w, h]
-                regs[obj_idx] = center_fmap - center_int
-                # print(regs[obj_idx])
-                reg_inds[obj_idx] = (
-                    center_int[1] * self.offset_size["w"] + center_int[0]
-                ) * (self.down_ratio["hmap"] / self.down_ratio["reg"])
-                wh_inds[obj_idx] = (
-                    center_int[1] * self.wh_size["w"] + center_int[0]
-                ) * (self.down_ratio["hmap"] / self.down_ratio["wh"])
-                ind_masks[obj_idx] = 1
-                obj_idx += 1
+            hmap_ms.append(hmap)
+            reg_ms.append(reg)
+            reg_inds_ms.append(reg_inds)
+            w_h_ms.append(w_h_)
+            wh_inds_ms.append(wh_inds)
+            kaf_ms.append(raf_field.cpu())
+            kaf_weight_ms.append(raf_weights.cpu())
 
         gt_centers = np.zeros((len(masks_bbox), 2))
         gt_wh = np.zeros((len(masks_bbox), 2))
@@ -430,15 +492,6 @@ class PSRDataset(Dataset):
             gt_wh[mask_idx] = masks_bbox[mask_idx]["scale"]
         gt_centers = torch.tensor(gt_centers, device=self.device)
         gt_wh = torch.tensor(gt_wh, device=self.device)
-        # generate kaf with gt relations and bbox
-        with torch.no_grad():
-            raf_field, raf_weights = get_kaf(
-                kr,
-                masks_bbox,
-                self.num_kr_cat,
-                self.down_ratio["kaf"],
-                (self.kaf_size["h"], self.kaf_size["w"]),
-            )
 
         # for batch loading
 
@@ -464,29 +517,25 @@ class PSRDataset(Dataset):
             for cat_idx in range(self.num_func_cat):
                 masks_cat[mask_idx][cat_idx] = 0
 
-        # concatenate all the kinematic relations for batch loading
-        for rel_idx in range(len(kr), self.max_rels):
-            kr.append([-1, -1, 13])
-
         return {
             "masked_img": masked_img,
             "masks_cat": masks_cat,
             "masks_bbox_wh": gt_wh.cpu(),
             "masks_bbox_center": gt_centers.cpu(),
-            "hmap": hmap,
-            "w_h_": w_h_,
-            "wh_inds": wh_inds,
-            "regs": regs,
-            "reg_inds": reg_inds,
+            "hmap": hmap_ms,  # different scales for fpn
+            "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
+            "wh_inds": wh_inds_ms,  # different scales for fpn
+            "regs": reg_ms,  # different scales for fpn
+            "reg_inds": reg_inds_ms,  # different scales for fpn
             "ind_masks": ind_masks,
-            "gt_relations": raf_field.cpu(),
-            "gt_relations_weights": raf_weights.cpu(),
+            "gt_relations": kaf_ms,  # different scales for fpn
+            "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
         }
 
 
 """
-masked_img: [4, 512, 512]
-three RGB channel and one mask channel
+masked_img: [6, 512, 512]
+three RGB channels for the original image and three RGB channels for colored masks
 
 masks_cat structure:
 {
@@ -522,8 +571,9 @@ class PSRDataset_eval(PSRDataset):
         root_dir,
         split,
         split_ratio=1.0,
-        down_ratio={"hmap": 32, "wh": 8, "reg": 16, "kaf": 4},
+        down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
+        prune=True,
     ):
         super().__init__(
             root_dir,
@@ -531,5 +581,6 @@ class PSRDataset_eval(PSRDataset):
             split_ratio,
             down_ratio=down_ratio,
             img_size=img_size,
+            prune=prune,
         )
         print("==> Initializing PSR Dataset for evaluation")

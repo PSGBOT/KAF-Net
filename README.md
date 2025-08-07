@@ -39,17 +39,30 @@ Open `torch/nn/functional.py` and find the line with `torch.batch_norm` and repl
 ## Train
 ### PSR Dataset
 #### single GPU or multi GPU using nn.DataParallel
-```bash
-python train.py --log_name resdcn_all \
-                --data_dir ~/cyl/Data/PSR_final/ \
-                --arch resdcn_101 \
-                --lr 5e-5 \
-                --lr_step 40,70 \
-                --batch_size 16 \
-                --num_epochs 90 --num_workers 0 --log_interval 5
+```
+python train.py --log_name psr_hg_512_dp \                                    train
+                --data_dir dir_to_psr_dataset \
+                --arch fcsgg \
+                --lr 5e-4 \
+                --lr_step 90,120 \
+                --batch_size 4 \
+                --num_epochs 140 --num_workers 0 --log_interval 10
 ```
 
-## Inference
-```bash
-python infer.py --image_path ./data/Sample\ PSR/Sample\ 1 --model_weights ./ckpt/dcn50_simple/checkpoint.t7 --visualize_output --visualization_dir ./debug_viz/infer
-```
+## Evaluate
+mkdir -p ~/Reconst/Data/PSR/Simple/train
+mkdir -p ~/Reconst/Data/PSR/Simple/val
+cd ~/Reconst/Data/PSR/Simple
+ls -d */ | grep -vE 'train|val' | shuf > all_samples.txt
+head -n 120 all_samples.txt > train_samples.txt
+tail -n +121 all_samples.txt > val_samples.txt
+cat train_samples.txt | xargs -I{} mv {} train/
+cat val_samples.txt | xargs -I{} mv {} val/
+
+python train.py --log_name hrnet \
+                --data_dir ~/Reconst/Data/PSR/Simple \
+                --arch hrnet \
+                --lr 5e-4 \
+                --lr_step 90,180 \
+                --batch_size 4 \
+                --num_epochs 90 --num_workers 0 --log_interval 10

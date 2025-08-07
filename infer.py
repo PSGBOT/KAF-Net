@@ -11,7 +11,7 @@ import os
 
 from nets.kaf import resdcn
 from nets.kaf import hourglass
-from datasets.utils.augimg import process_image_and_masks
+from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
 
 
 def parse_args():
@@ -85,7 +85,9 @@ def main():
         raise ValueError(f"Unsupported architecture: {args.arch}")
 
     # Load weights
-    model.load_state_dict(torch.load(args.model_weights, map_location="cpu"))
+    model.load_state_dict(
+        torch.load(args.model_weights, map_location="cpu")["model_state_dict"]
+    )
     model.eval()  # Set model to evaluation mode
 
     # Move model to GPU if available
@@ -93,7 +95,7 @@ def main():
     model = model.to(device)
 
     # Load and preprocess the image
-    inp_image, bbox = process_image_and_masks(args.image_path)
+    inp_image, bbox = process_image_and_masks_mcm(args.image_path)
     inp_image = torch.from_numpy(inp_image).unsqueeze(0).to(device)
     print(inp_image.shape)
 
@@ -102,7 +104,12 @@ def main():
         outputs = model(inp_image)
         # The model output is a list containing one element, which is another list of tensors.
         # The inner list contains [hmap, regs, w_h_, raf]
-        hmap, regs, w_h_, raf = outputs[0]
+        hmap, regs, w_h_, raf = outputs
+
+        hmap = hmap[2]
+        regs = regs[2]
+        w_h_ = w_h_[2]
+        raf = raf[2]
 
         # Visualize outputs if requested
         if args.visualize_output:
