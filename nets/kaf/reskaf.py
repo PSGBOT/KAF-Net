@@ -243,8 +243,8 @@ def fill_up_weights(up):
 def fill_fc_weights(layers):
     for m in layers.modules():
         if isinstance(m, nn.Conv2d):
-            nn.init.normal_(m.weight, std=0.001)
-            # torch.nn.init.kaiming_normal_(m.weight.data, nonlinearity='relu')
+            # nn.init.normal_(m.weight, std=0.001)
+            torch.nn.init.kaiming_normal_(m.weight.data, nonlinearity="relu")
             # torch.nn.init.xavier_normal_(m.weight.data)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
@@ -315,6 +315,14 @@ class KAF_ResDCN(nn.Module):
 
         fill_fc_weights(self.regs)
         fill_fc_weights(self.w_h_)
+
+        for m in self.w_h_.modules():
+            if isinstance(m, nn.Conv2d):
+                if m.bias is not None:
+                    # Initialize bias to predict reasonable initial size (e.g., 50 pixels)
+                    # nn.init.constant_(m.bias, 3.91)  # log(50) ≈ 3.91 if using log space
+                    # Or just use small positive values if direct pixel space
+                    nn.init.constant_(m.bias, 50.0)
 
     def _make_layer(self, block, out_channel, blocks, stride=1):
         downsample = None

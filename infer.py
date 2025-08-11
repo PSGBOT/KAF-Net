@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import cv2
 import os
 import shutil
-from utils.utils import load_model
+from utils.utils import load_model_for_inference
 
 from nets.kaf import reskaf
 from nets.kaf import hourglass
@@ -97,7 +97,7 @@ def main():
         raise ValueError(f"Unsupported architecture: {args.arch}")
 
     # Load weights
-    model, _ = load_model(model, args.model_weights)
+    model, _ = load_model_for_inference(model, args.model_weights)
     model.eval()  # Set model to evaluation mode
 
     # Move model to GPU if available

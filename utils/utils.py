@@ -51,6 +51,39 @@ def flip_lr_off(x, flip_idx):
     return torch.from_numpy(tmp.reshape(shape)).to(x.device)
 
 
+def load_model_for_inference(model, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    if "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        start_epoch = checkpoint.get("epoch", 0)
+    else:
+        state_dict = checkpoint
+        start_epoch = 0
+
+    # Handle DataParallel/DistributedDataParallel wrapper
+    if any(k.startswith("module.") for k in state_dict.keys()):
+        # Remove 'module.' prefix
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                new_state_dict[k[7:]] = v  # Remove 'module.' prefix
+            else:
+                new_state_dict[k] = v
+        state_dict = new_state_dict
+
+    # Load the state dict
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+    if missing_keys:
+        print(f"Missing keys: {missing_keys}")
+    if unexpected_keys:
+        print(f"Unexpected keys: {unexpected_keys}")
+
+    print(f"Loaded pretrained weights from {checkpoint_path}!")
+    return model, start_epoch
+
+
 def load_model(model, pretrain_dir):
     ckpt = torch.load(pretrain_dir, map_location="cuda:0")
     state_dict_ = ckpt["model_state_dict"]
