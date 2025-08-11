@@ -350,26 +350,27 @@ def main():
             total_reg_loss = 0
             total_wh_loss = 0
             total_kaf_loss = 0
-            for stride_idx in range(len(down_ratio)):
-                hmap = [outputs[0][stride_idx]]
-                regs = outputs[1][stride_idx]
-                w_h_ = outputs[2][stride_idx]
-                raf = outputs[3][stride_idx]
+            for fpn_idx in range(len(down_ratio)):
+                hmap = [outputs[0][fpn_idx]]
+                regs = outputs[1][fpn_idx]
+                w_h_ = outputs[2][fpn_idx]
+                raf = outputs[3][fpn_idx]
 
-                regs = _tranpose_and_gather_feature(regs, batch["reg_inds"][stride_idx])
-                w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"][stride_idx])
+                regs = _tranpose_and_gather_feature(regs, batch["reg_inds"][fpn_idx])
+                w_h_ = _tranpose_and_gather_feature(w_h_, batch["wh_inds"][fpn_idx])
+                print(f"Model w_h_ predictions (sample): {w_h_[:5, :5]}")
+                print(f"Ground truth w_h_ (sample): {batch['w_h_'][fpn_idx][:5, :5]}")
+                print(
+                    f"w_h_ prediction range: {w_h_.min().item():.6f} to {w_h_.max().item():.6f}"
+                )
 
-                hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][stride_idx])
-                reg_loss = _reg_loss(
-                    regs, batch["regs"][stride_idx], batch["ind_masks"]
-                )
-                w_h_loss = _reg_loss(
-                    w_h_, batch["w_h_"][stride_idx], batch["ind_masks"]
-                )
+                hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][fpn_idx])
+                reg_loss = _reg_loss(regs, batch["regs"][fpn_idx], batch["ind_masks"])
+                w_h_loss = _reg_loss(w_h_, batch["w_h_"][fpn_idx], batch["ind_masks"])
                 kaf_loss = _kaf_loss(
                     raf,
-                    batch["gt_relations"][stride_idx],
-                    batch["gt_relations_weights"][stride_idx],
+                    batch["gt_relations"][fpn_idx],
+                    batch["gt_relations_weights"][fpn_idx],
                 )
                 total_hmap_loss += hmap_loss
                 total_reg_loss += reg_loss

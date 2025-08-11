@@ -279,7 +279,6 @@ class KAF_ResDCN(nn.Module):
         self.layer4 = self._make_layer(blocks[1], 512, num_layers[3], stride=2)
         self.fpn_1 = get_fpn()
         self.fpn_2 = get_fpn()
-        self.deconv_layers = nn.ModuleList([self.fpn_1, self.fpn_2])
 
         if head_conv > 0:
             # heatmap layers
@@ -389,19 +388,23 @@ class KAF_ResDCN(nn.Module):
 
     def init_weights(self, num_layers):
         print("=> init deconv weights from normal distribution")
-        for name, m in self.deconv_layers.named_modules():
+        for name, m in self.fpn_1.named_modules():
+            if isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        for name, m in self.fpn_2.named_modules():
             if isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
 
-resnet_spec = {
-    18: ([BasicBlock], [2, 2, 2, 2]),
-    34: ([BasicBlock], [3, 4, 6, 3]),
-    50: ([ConvBottleneck], [3, 4, 6, 3]),
-    101: ([ConvBottleneck], [3, 4, 23, 3]),
-    152: ([ConvBottleneck], [3, 8, 36, 3]),
-}
+# resnet_spec = {
+#     18: ([BasicBlock], [2, 2, 2, 2]),
+#     34: ([BasicBlock], [3, 4, 6, 3]),
+#     50: ([ConvBottleneck], [3, 4, 6, 3]),
+#     101: ([ConvBottleneck], [3, 4, 23, 3]),
+#     152: ([ConvBottleneck], [3, 8, 36, 3]),
+# }
 
 resdcn_spec = {
     18: ([ConvBottleneck, DeformBottleneck], [2, 2, 2, 2]),
@@ -411,11 +414,11 @@ resdcn_spec = {
 }
 
 
-def get_kaf_resnet(num_layers, head_conv=64, num_classes=13, num_rel=14):
-    block_classes, layers = resnet_spec[num_layers]
-    model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
-    model.init_weights(num_layers)
-    return model
+# def get_kaf_resnet(num_layers, head_conv=64, num_classes=13, num_rel=14):
+#     block_classes, layers = resnet_spec[num_layers]
+#     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
+#     model.init_weights(num_layers)
+#     return model
 
 
 def get_kaf_resdcn(num_layers, head_conv=64, num_classes=13, num_rel=14):

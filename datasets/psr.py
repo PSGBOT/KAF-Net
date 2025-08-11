@@ -243,6 +243,7 @@ class PSRDataset(Dataset):
                     }
                 else:
                     # If mask is completely removed by subtraction, set empty bbox
+                    print("invalid mask")
                     masks_bbox[mask_idx] = {
                         "center": (0, 0),
                         "scale": [0, 0],

@@ -121,26 +121,28 @@ def extract_relations(kaf_img, objects, rel_thresh=0.3):
     return relations
 
 
-def get_scene_graph(kaf):
-    # [hmap(tensor[B,13,H,W]), reg(tensor[B,2,H,W]), w_h_(tensor[B,2,H,W]), kaf(tensor[B,28,H,W])]
-    hmap = kaf[-1][0]
-    regs = kaf[-1][1]
-    w_h_ = kaf[-1][2]
-    kaf = kaf[-1][3]
+def get_scene_graph(hmaps, regs, w_h_s, kafs, top_K=100):
+    # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
+    fpn_num = len(hmaps)
+    print(f"Receiving fmaps with {fpn_num} FPNs")
     objects = []
     relations = []
-    for i in range(hmap.shape[0]):
+    scene_graph = {}
+    for fpn_level in range(fpn_num):
         # Process each image's outputs
-        hmap_img = hmap[i]  # [13, H, W]
-        regs_img = regs[i]  # [2, H, W]
-        w_h_img = w_h_[i]  # [2, H, W]
-        kaf_img = kaf[i]  # [28, H, W]
+        hmap = hmaps[fpn_level][0].unsqueeze(0)  # [1, 13, H, W]
+        reg = regs[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
+        w_h_ = w_h_s[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
 
         # Extract objects and relations from the outputs
-        objects = extract_objects(hmap_img, regs_img, w_h_img)
-        relations = extract_relations(kaf_img, objects)
-        scene_graph = {"objects": objects, "relations": relations}
-        yield scene_graph
+        dets = ctdet_decode(hmap, reg, w_h_, K=top_K)
+        # print(dets)
+        dets = dets.detach().cpu().numpy().reshape(1, -1, dets.shape[2])[0]
+
+    kaf = kafs[fpn_num - 1][0]  # [28, H, W]
+    relations = extract_relations(kaf, objects)
+    scene_graph = {"objects": objects, "relations": relations}
+    return scene_graph
 
 
 def visualize_scene_graph(scene_graph):
