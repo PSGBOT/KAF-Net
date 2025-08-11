@@ -314,7 +314,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.2 * w_h_loss + 2 * kaf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -325,6 +325,16 @@ def main():
             if batch_idx % cfg.log_interval == 0:
                 duration = time.perf_counter() - tic
                 tic = time.perf_counter()
+
+                # Monitor gradient norms
+                total_norm = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** (1.0 / 2)
+                clipped = total_norm > cfg.max_grad_norm
+
                 print(
                     "[%d/%d-%d/%d] "
                     % (epoch, cfg.num_epochs, batch_idx, len(train_loader))
@@ -335,8 +345,13 @@ def main():
                         w_h_loss.item(),
                         kaf_loss.item(),
                     )
-                    + " (%d samples/sec)"
+                    + " (%d samples/sec) grad_norm= %.4f clipped= %s"
                     % (cfg.batch_size * cfg.log_interval / duration)
+                    % (
+                        cfg.batch_size * cfg.log_interval / duration,
+                        total_norm,
+                        clipped,
+                    )
                 )
 
                 step = len(train_loader) * epoch + batch_idx
@@ -346,6 +361,8 @@ def main():
                 summary_writer.add_scalar("w_h_loss/train", w_h_loss.item(), step)
                 summary_writer.add_scalar("raf_loss/train", kaf_loss.item(), step)
                 summary_writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
+                summary_writer.add_scalar("grad_norm", total_norm, step)
+                summary_writer.add_scalar("grad_clipped", float(clipped), step)
 
     @torch.no_grad()
     def val_loss_map_fpn(epoch):
@@ -399,7 +416,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.2 * reg_loss + 0.02 * w_h_loss + 4 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.2 * w_h_loss + 2 * kaf_loss
 
             total_b_hmap_loss += hmap_loss.item()
             total_b_reg_loss += reg_loss.item()
