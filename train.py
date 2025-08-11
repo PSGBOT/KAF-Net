@@ -346,7 +346,6 @@ def main():
                         kaf_loss.item(),
                     )
                     + " (%d samples/sec) grad_norm= %.4f clipped= %s"
-                    % (cfg.batch_size * cfg.log_interval / duration)
                     % (
                         cfg.batch_size * cfg.log_interval / duration,
                         total_norm,
