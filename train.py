@@ -312,7 +312,8 @@ def main():
                 total_kaf_loss += kaf_loss
             hmap_loss = total_hmap_loss / len(down_ratio)
             reg_loss = total_reg_loss / len(down_ratio)
-            w_h_loss = total_wh_loss / len(down_ratio)
+            # w_h_loss = total_wh_loss / len(down_ratio)
+            w_h_loss = 0
             kaf_loss = total_kaf_loss / len(down_ratio)
             loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.2 * w_h_loss + 2 * kaf_loss
 
@@ -413,7 +414,8 @@ def main():
                 total_kaf_loss += kaf_loss
             hmap_loss = total_hmap_loss / len(down_ratio)
             reg_loss = total_reg_loss / len(down_ratio)
-            w_h_loss = total_wh_loss / len(down_ratio)
+            # w_h_loss = total_wh_loss / len(down_ratio)
+            w_h_loss = 0
             kaf_loss = total_kaf_loss / len(down_ratio)
             loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.2 * w_h_loss + 2 * kaf_loss
 
