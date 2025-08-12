@@ -1,9 +1,9 @@
 import math
-
-import torch.nn as nn
 import torch
+import torch.nn as nn
 import numpy as np
 
+# your DCN import (keeps your original)
 from lib.DCNv2.dcn_v2 import DCN
 from nets.kaf.fpn import get_fpn
 
@@ -98,16 +98,10 @@ class DeformBottleneck(nn.Module):
         super(DeformBottleneck, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
-        # self.conv2 = nn.Conv2d(
-        #     out_channels,
-        #     out_channels,
-        #     kernel_size=3,
-        #     stride=stride,
-        #     padding=1,
-        #     bias=False,
-        # )
+        # use DCN for the 3x3
+        # note: DCN expects (in_channels, out_channels, kernel_size=..)
         self.dcn2 = DCN(
-            out_channels,  # Changed from in_channels to out_channels
+            out_channels,  # Changed from in_channels to out_channels in your original
             out_channels,
             kernel_size=(3, 3),
             stride=stride,
@@ -243,11 +237,36 @@ def fill_up_weights(up):
 def fill_fc_weights(layers):
     for m in layers.modules():
         if isinstance(m, nn.Conv2d):
-            # nn.init.normal_(m.weight, std=0.001)
             torch.nn.init.kaiming_normal_(m.weight.data, nonlinearity="relu")
-            # torch.nn.init.xavier_normal_(m.weight.data)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+
+
+# ----------------- NEW: DCNLayer wrapper for heads -----------------
+class DCNLayer(nn.Module):
+    """
+    Simple wrapper: offset conv -> DCN main conv
+    Uses DCN class (from lib.DCNv2.dcn_v2 import DCN).
+    """
+
+    def __init__(
+        self, in_ch, out_ch, kernel_size=3, stride=1, padding=1, deformable_groups=1
+    ):
+        super(DCNLayer, self).__init__()
+        self.k = kernel_size
+        # main DCN conv; signature follows your DCN constructor
+        # (in_channels, out_channels, kernel_size=(k,k), stride=..., padding=..., deformable_groups=...)
+        self.dcn = DCN(
+            in_ch,
+            out_ch,
+            kernel_size=(kernel_size, kernel_size),
+            stride=stride,
+            padding=padding,
+            deformable_groups=deformable_groups,
+        )
+
+    def forward(self, x):
+        return self.dcn(x)
 
 
 class KAF_ResDCN(nn.Module):
@@ -281,32 +300,35 @@ class KAF_ResDCN(nn.Module):
         self.fpn_2 = get_fpn()
 
         if head_conv > 0:
+            # **Replace first conv in each head with DCNLayer**
             # heatmap layers
             self.hmap = nn.Sequential(
-                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+                DCNLayer(256, head_conv, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, num_classes, kernel_size=1, bias=True),
             )
             self.hmap[-1].bias.data.fill_(-2.19)
+
             self.raf = nn.Sequential(
-                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+                DCNLayer(256, head_conv, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, num_rel * 2, kernel_size=1, bias=True),
             )
             self.raf[-1].bias.data.fill_(-2.19)
+
             # regression layers
             self.regs = nn.Sequential(
-                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+                DCNLayer(256, head_conv, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, 2, kernel_size=1, bias=True),
             )
             self.w_h_ = nn.Sequential(
-                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+                DCNLayer(256, head_conv, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(head_conv, 2, kernel_size=1, bias=True),
             )
         else:
-            # heatmap layers
+            # fallback: keep original plain conv heads if head_conv==0
             self.hmap = nn.Conv2d(64, num_classes, kernel_size=1, bias=True)
             self.raf = nn.Conv2d(64, num_rel * 2, kernel_size=1, bias=True)
             # regression layers
@@ -319,9 +341,6 @@ class KAF_ResDCN(nn.Module):
         for m in self.w_h_.modules():
             if isinstance(m, nn.Conv2d):
                 if m.bias is not None:
-                    # Initialize bias to predict reasonable initial size (e.g., 50 pixels)
-                    # nn.init.constant_(m.bias, 3.91)  # log(50) ≈ 3.91 if using log space
-                    # Or just use small positive values if direct pixel space
                     nn.init.constant_(m.bias, 50.0)
 
     def _make_layer(self, block, out_channel, blocks, stride=1):
@@ -405,6 +424,82 @@ class KAF_ResDCN(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
+    def load_pretrained_resnet(self, num_layers=50):
+        """
+        Loads torchvision ResNet pretrained weights (ImageNet) and copies any matching parameters
+        into this model's state_dict (matching by name and shape). Also zero-inits DCN offset convs.
+        """
+        print(
+            f"=> loading pretrained ResNet-{num_layers} weights and copying matching params"
+        )
+        # robust import for different torchvision versions
+        try:
+            if num_layers == 50:
+                from torchvision.models import resnet50, ResNet50_Weights
+
+                weights = ResNet50_Weights.IMAGENET1K_V2
+                resnet = resnet50(weights=weights)
+            elif num_layers == 101:
+                from torchvision.models import resnet101, ResNet101_Weights
+
+                weights = ResNet101_Weights.IMAGENET1K_V2
+                resnet = resnet101(weights=weights)
+            elif num_layers == 18:
+                from torchvision.models import resnet18, ResNet18_Weights
+
+                weights = ResNet18_Weights.IMAGENET1K_V2
+                resnet = resnet18(weights=weights)
+            elif num_layers == 34:
+                from torchvision.models import resnet34, ResNet34_Weights
+
+                weights = ResNet34_Weights.IMAGENET1K_V2
+                resnet = resnet34(weights=weights)
+            else:
+                # fallback to resnet50
+                from torchvision.models import resnet50
+
+                resnet = resnet50(pretrained=True)
+        except Exception:
+            # older torchvision fallback
+            try:
+                if num_layers == 50:
+                    from torchvision.models import resnet50
+
+                    resnet = resnet50(pretrained=True)
+                elif num_layers == 101:
+                    from torchvision.models import resnet101
+
+                    resnet = resnet101(pretrained=True)
+                elif num_layers == 18:
+                    from torchvision.models import resnet18
+
+                    resnet = resnet18(pretrained=True)
+                elif num_layers == 34:
+                    from torchvision.models import resnet34
+
+                    resnet = resnet34(pretrained=True)
+                else:
+                    from torchvision.models import resnet50
+
+                    resnet = resnet50(pretrained=True)
+            except Exception as e:
+                print("Failed to load torchvision ResNet pretrained model:", e)
+                return
+
+        resnet_sd = resnet.state_dict()
+        model_sd = self.state_dict()
+
+        copied = 0
+        for k, v in resnet_sd.items():
+            if k in model_sd and model_sd[k].shape == v.shape:
+                model_sd[k].copy_(v)
+                copied += 1
+        # load updated state dict to model
+        self.load_state_dict(model_sd)
+        print(f"Copied {copied} parameters from torchvision ResNet into the model.")
+
+        print("DCN offset convs zero-initialized. You're good to fine-tune.")
+
 
 # resnet_spec = {
 #     18: ([BasicBlock], [2, 2, 2, 2]),
@@ -422,16 +517,10 @@ resdcn_spec = {
 }
 
 
-# def get_kaf_resnet(num_layers, head_conv=64, num_classes=13, num_rel=14):
-#     block_classes, layers = resnet_spec[num_layers]
-#     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
-#     model.init_weights(num_layers)
-#     return model
-
-
 def get_kaf_resdcn(num_layers, head_conv=64, num_classes=13, num_rel=14):
     block_classes, layers = resdcn_spec[num_layers]
     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
+    model.load_pretrained_resnet(num_layers=num_layers)
     model.init_weights(num_layers)
     return model
 
@@ -440,8 +529,10 @@ if __name__ == "__main__":
     import torch
 
     def hook(self, input, output):
-        print(output.data.cpu().numpy().shape)
-        # pass
+        try:
+            print(output.data.cpu().numpy().shape)
+        except Exception:
+            pass
 
     net = get_kaf_resdcn(50).cuda()
 
@@ -449,13 +540,16 @@ if __name__ == "__main__":
         if isinstance(m, nn.Conv2d) or isinstance(m, DCN):
             m.register_forward_hook(hook)
 
+    # Example: load pretrained ResNet50 weights into model (will copy matching params)
+    net.load_pretrained_resnet(num_layers=50)
+
     with torch.no_grad():
         y = net(torch.randn(4, 6, 512, 512).cuda())
         print("Result dimensions")
         print(type(y[0]))
         for level in range(4):
             print(f"FPN level: {level}")
-            print((y[0][level].cpu().numpy()).shape)  # hmap [2,80,128,128]
-            print((y[1][level].cpu().numpy()).shape)  # reg [2,2,128,128]
-            print((y[2][level].cpu().numpy()).shape)  # wh [2,2,128,128]
-            print((y[3][level].cpu().numpy()).shape)  # raf [2,14,128,128]
+            print((y[0][level].cpu().numpy()).shape)  # hmap
+            print((y[1][level].cpu().numpy()).shape)  # reg
+            print((y[2][level].cpu().numpy()).shape)  # wh
+            print((y[3][level].cpu().numpy()).shape)  # raf
