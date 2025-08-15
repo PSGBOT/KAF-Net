@@ -29,7 +29,7 @@ def _topk(scores, K=40):
     return topk_score, topk_inds, topk_clses, topk_ys, topk_xs
 
 
-def ctdet_decode(hmap, regs, w_h_, K=100):
+def ctdet_decode(hmap, regs, w_h_, down_ratio=4, K=100):
     batch, cat, height, width = hmap.shape
     hmap = torch.sigmoid(hmap)
 
@@ -38,12 +38,12 @@ def ctdet_decode(hmap, regs, w_h_, K=100):
     hmap = _nms(hmap)  # perform nms on heatmaps
 
     scores, inds, clses, ys, xs = _topk(hmap, K=K)
-    print(inds)
+    print(xs)
 
     regs = _tranpose_and_gather_feature(regs, inds)
     regs = regs.view(batch, K, 2)
-    xs = xs.view(batch, K, 1) + regs[:, :, 0:1]
-    ys = ys.view(batch, K, 1) + regs[:, :, 1:2]
+    xs = xs.view(batch, K, 1) * down_ratio + regs[:, :, 0:1]
+    ys = ys.view(batch, K, 1) * down_ratio + regs[:, :, 1:2]
 
     # try:
     #     print(w_h_.shape)

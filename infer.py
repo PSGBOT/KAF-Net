@@ -149,6 +149,7 @@ def main():
             regs,
             w_h_s,
             rafs,
+            bbox,
             topk_relations,
         )
 
