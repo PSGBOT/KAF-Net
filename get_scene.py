@@ -8,106 +8,126 @@ import math
 
 
 @torch.no_grad()
-def get_kaf_infer(objects, num_predicates, kaf_img, sigma_factor=2.0):
+def get_kaf_path(objects, sigma_factor=2.0, stride=4):
     """
     Generate inference weights for KAF relation extraction.
 
     Args:
         objects: list of detected objects with positions
-        num_predicates: number of relation types
-        kaf_img: KAF tensor [num_predicates*2, H, W]
         sigma_factor: controls the width of integration region
 
     Returns:
-        relation_weights: tensor [num_objects, num_objects, num_predicates, H, W]
-                         representing integration weights for each object pair and relation
+        relation_weights: tensor [num_objects, num_objects, H, W]
+                         representing integration weights for each object pair
     """
-    device = kaf_img.device
-    H, W = kaf_img.shape[1], kaf_img.shape[2]
-    num_objects = len(objects)
+    if len(objects) == 0:
+        return torch.empty(0, 0, 0, 0)
 
-    # Pre-allocate weight tensor
-    relation_weights = torch.zeros(
-        (num_objects, num_objects, num_predicates, H, W),
+    # Get device from first object's position (assuming they're tensors)
+    # If objects store positions as lists, we'll use CPU and move to GPU later
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Extract object centers
+    centers = torch.tensor(
+        [[obj["yx"][0] / stride, obj["yx"][1] / stride] for obj in objects],
         device=device,
         dtype=torch.float32,
-    )
+    )  # [N, 2] (y, x)
+
+    # Get typical feature map size from the calling context
+    # We'll assume a reasonable default size and let it be overridden if needed
+    H, W = (
+        int(512 / stride),
+        int(512 / stride),
+    )  # Default size, should match the KAF feature map
+
+    num_objects = len(objects)
 
     # Create coordinate grids
-    y_grid, x_grid = torch.meshgrid(
-        torch.arange(H, device=device, dtype=torch.float32),
-        torch.arange(W, device=device, dtype=torch.float32),
-        indexing="ij",
+    y_coords = (
+        torch.arange(H, device=device, dtype=torch.float32).view(H, 1).expand(H, W)
     )
+    x_coords = (
+        torch.arange(W, device=device, dtype=torch.float32).view(1, W).expand(H, W)
+    )
+    coords = torch.stack([y_coords, x_coords], dim=0)  # [2, H, W]
 
-    for i, subj in enumerate(objects):
-        for j, obj in enumerate(objects):
+    # Initialize weights tensor
+    relation_weights = torch.zeros(num_objects, num_objects, H, W, device=device)
+
+    # Compute integration widths for each object
+    widths = torch.tensor(
+        [min(obj["width"], obj["height"]) / 4 for obj in objects], device=device
+    )
+    widths = torch.clamp(widths, min=1.0)
+
+    # For each object pair
+    for i in range(num_objects):
+        for j in range(num_objects):
             if i == j:
                 continue
 
-            # Get object centers
-            y0, x0 = subj["yx"]
-            y1, x1 = obj["yx"]
+            # Get line endpoints
+            start = centers[i]  # [2] (y, x)
+            end = centers[j]  # [2] (y, x)
 
-            # Calculate relation vector and properties
-            rel_vector = torch.tensor(
-                [y1 - y0, x1 - x0], device=device, dtype=torch.float32
-            )
-            rel_length = torch.norm(rel_vector)
+            # Compute line direction and length
+            line_vec = end - start  # [2]
+            line_length = torch.norm(line_vec)
 
-            if rel_length < 1e-6:
+            if line_length < 1e-6:
                 continue
 
-            rel_unit = rel_vector / rel_length
-            rel_perp = torch.tensor(
-                [-rel_unit[1], rel_unit[0]], device=device
-            )  # perpendicular unit vector
+            # Unit vector along the line
+            line_unit = line_vec / line_length
 
-            # Calculate line center
-            line_center_y = (y0 + y1) / 2
-            line_center_x = (x0 + x1) / 2
+            # Perpendicular unit vector
+            perp_unit = torch.tensor([-line_unit[1], line_unit[0]], device=device)
 
-            # Calculate distances from each pixel to the relation line
-            # Distance along the relation direction
-            dist_along = rel_unit[0] * (y_grid - line_center_y) + rel_unit[1] * (
-                x_grid - line_center_x
-            )
+            # Integration width for this pair
+            sigma = min(widths[i], widths[j]) / stride * sigma_factor
 
-            # Distance perpendicular to the relation direction
-            dist_perp = torch.abs(
-                rel_perp[0] * (y_grid - line_center_y)
-                + rel_perp[1] * (x_grid - line_center_x)
-            )
+            # For each pixel, compute distance to the line
+            # Vector from start point to each pixel
+            pixel_vecs = coords - start.view(2, 1, 1)  # [2, H, W]
 
-            # Calculate integration width based on object sizes
-            sigma = (
-                min(subj["width"], subj["height"], obj["width"], obj["height"])
-                / 4
-                * sigma_factor
-            )
-            sigma = max(1.0, sigma)
+            # Project onto line direction to get position along line
+            along_line = torch.sum(
+                pixel_vecs * line_unit.view(2, 1, 1), dim=0
+            )  # [H, W]
 
-            # Create weight mask: pixels within the integration region
-            along_mask = torch.abs(dist_along) <= rel_length / 2
-            perp_mask = dist_perp <= sigma
-            valid_mask = along_mask & perp_mask
+            # Project onto perpendicular direction to get distance from line
+            perp_dist = torch.abs(
+                torch.sum(pixel_vecs * perp_unit.view(2, 1, 1), dim=0)
+            )  # [H, W]
 
-            # Apply Gaussian-like weighting
-            weights = torch.exp(-dist_perp / sigma) * valid_mask.float()
+            # Only consider pixels within the line segment (0 <= t <= 1)
+            t = along_line / line_length
+            on_segment = (t >= 0) & (t <= 1)
 
-            # Normalize weights
+            # Gaussian weight based on perpendicular distance
+            weights = torch.exp(-0.5 * (perp_dist / sigma) ** 2)
+
+            # Zero out weights outside the line segment
+            weights = weights * on_segment.float()
+
+            # Normalize weights so they sum to 1 along the integration path
             weight_sum = weights.sum()
-            if weight_sum > 0:
+            if weight_sum > 1e-6:
                 weights = weights / weight_sum
 
-            # Apply to all relation types
-            for rel_type in range(num_predicates):
-                relation_weights[i, j, rel_type] = weights
+            relation_weights[i, j] = weights
+
+            # visualize the weights use matplotlib
+            import matplotlib.pyplot as plt
+
+            plt.imshow(weights.cpu().numpy())
+            plt.show()
 
     return relation_weights
 
 
-def fast_extract_relations(kaf_img, objects, rel_thresh=0.3, use_weights=True):
+def fast_extract_relations(kaf_img, objects, rel_thresh=0.2, use_weights=True):
     """
     Fast relation extraction using pre-computed weights and vectorized operations.
 
@@ -129,7 +149,7 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.3, use_weights=True):
 
     if use_weights:
         # Pre-compute integration weights for all object pairs
-        weights = get_kaf_infer(objects, num_rel, kaf_img)
+        weights = get_kaf_path(objects, sigma_factor=0.5)
 
         # Extract object scores for vectorized computation
         scores = torch.tensor([obj["score"] for obj in objects], device=device)
@@ -142,7 +162,7 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.3, use_weights=True):
             # Compute confidence for all object pairs at once
             # weights: [num_obj, num_obj, num_rel, H, W]
             # kaf_vec: [2, H, W]
-            rel_weights = weights[:, :, rel_type]  # [num_obj, num_obj, H, W]
+            rel_weights = weights[:, :]  # [num_obj, num_obj, H, W]
 
             # Compute dot product between vector field and relation direction
             confidences = torch.zeros(len(objects), len(objects), device=device)
@@ -180,6 +200,8 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.3, use_weights=True):
             # Find relations above threshold
             valid_rels = final_confidences > rel_thresh
             subj_ids, obj_ids = torch.where(valid_rels)
+            print(valid_rels)
+            print(subj_ids, obj_ids)
 
             for subj_id, obj_id in zip(subj_ids.cpu(), obj_ids.cpu()):
                 if subj_id != obj_id:
@@ -653,7 +675,7 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
     if objects and len(kafs) > 0:
         kaf = kafs[-1][0]  # Use the highest resolution KAF map [28, H, W]
         relations = fast_extract_relations(
-            kaf, objects, rel_thresh=0.3, use_weights=True
+            kaf, objects, rel_thresh=0.2, use_weights=True
         )
 
     scene_graph = {"objects": objects, "relations": relations}
