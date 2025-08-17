@@ -299,8 +299,12 @@ def main():
                 # )
 
                 hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][fpn_idx])
-                reg_loss = _reg_loss(regs, batch["regs"][fpn_idx], batch["ind_masks"])
-                w_h_loss = _reg_loss(w_h_, batch["w_h_"][fpn_idx], batch["ind_masks"])
+                reg_loss = _reg_loss(
+                    regs, batch["regs"][fpn_idx], batch["ind_masks"][fpn_idx]
+                )
+                w_h_loss = _reg_loss(
+                    w_h_, batch["w_h_"][fpn_idx], batch["ind_masks"][fpn_idx]
+                )
                 kaf_loss = _kaf_loss(
                     raf,
                     batch["gt_relations"][fpn_idx],
@@ -314,7 +318,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0 * w_h_loss + 2 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.05 * w_h_loss + 2 * kaf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -415,7 +419,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0 * w_h_loss + 2 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.05 * w_h_loss + 2 * kaf_loss
 
             total_b_hmap_loss += hmap_loss.item()
             total_b_reg_loss += reg_loss.item()
