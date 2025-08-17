@@ -177,46 +177,45 @@ def visualize_dataset(root_dir, img_size=512):
                 ax.axis("off")
 
             # # Display w_h_ and regs
-            # ax = axes[7 + fpn_level_idx * 4 + 2]
-            # ax.set_title(titles[9])
-            # ax.axis("off")
-            #
-            # # Filter out zero entries (where ind_masks is 0)
-            # valid_indices = np.where(ind_masks_level == 1)[
-            #     0
-            # ]  # ind_masks is not per-FPN level, but common for all objects
-            # valid_regs = regs_level[valid_indices]
-            #
-            # if len(valid_indices) > 0:
-            #     table_data = []
-            #     for j in range(len(valid_indices)):
-            #         table_data.append(
-            #             [
-            #                 f"{part_centers[j, 0]:.2f}",
-            #                 f"{part_centers[j, 1]:.2f}",
-            #                 f"{part_scales[j, 0]:.2f}",
-            #                 f"{part_scales[j, 1]:.2f}",
-            #                 f"{valid_regs[j, 0]:.2f}",
-            #                 f"{valid_regs[j, 1]:.2f}",
-            #             ]
-            #         )
-            #     col_labels = ["X", "Y", "Width", "Height", "Reg_X", "Reg_Y"]
-            #     ax.table(
-            #         cellText=table_data,
-            #         colLabels=col_labels,
-            #         loc="center",
-            #         cellLoc="center",
-            #     )
-            #     ax.set_title(titles[9])
-            # else:
-            #     ax.text(
-            #         0.5,
-            #         0.5,
-            #         "No valid objects",
-            #         horizontalalignment="center",
-            #         verticalalignment="center",
-            #         transform=ax.transAxes,
-            #     )
+            ax = axes[7 + fpn_level_idx * 4 + 2]
+            ax.set_title("table")
+            ax.axis("off")
+
+            # Filter out zero entries (where ind_masks is 0)
+            valid_indices = np.where(ind_masks_level == 1)[
+                0
+            ]  # ind_masks is not per-FPN level, but common for all objects
+            valid_regs = regs_level[valid_indices]
+            valid_wh = wh_level[valid_indices]
+
+            if len(valid_indices) > 0:
+                table_data = []
+                for j in range(len(valid_indices)):
+                    table_data.append(
+                        [
+                            f"{valid_wh[j, 0]:.2f}",
+                            f"{valid_wh[j, 1]:.2f}",
+                            f"{valid_regs[j, 0]:.2f}",
+                            f"{valid_regs[j, 1]:.2f}",
+                        ]
+                    )
+                col_labels = ["X", "Y", "Width", "Height", "Reg_X", "Reg_Y"]
+                ax.table(
+                    cellText=table_data,
+                    colLabels=col_labels,
+                    loc="center",
+                    cellLoc="center",
+                )
+                ax.set_title("table")
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No valid objects",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=ax.transAxes,
+                )
 
             # Display RAF Field Magnitude (Fixed)
             ax = axes[7 + fpn_level_idx * 4 + 3]
