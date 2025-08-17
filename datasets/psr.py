@@ -453,9 +453,9 @@ class PSRDataset(Dataset):
                     < fpn_scale
                     <= self.fpn_range[stride_key][1]
                 ):
-                    print(
-                        f"skip object {mask_name} with fpn {stride_key}, with scale {fpn_scale}"
-                    )
+                    # print(
+                    #     f"skip object {mask_name} with fpn {stride_key}, with scale {fpn_scale}"
+                    # )
                     continue
 
                 center = bbox_info["center"]  # [x, y] in image space
