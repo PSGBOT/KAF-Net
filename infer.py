@@ -8,10 +8,13 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 import cv2
 import os
+import shutil
+from utils.utils import load_model_for_inference
 
-from nets.kaf import resdcn
+from nets.kaf import reskaf
 from nets.kaf import hourglass
 from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
+from get_scene import extract_objects, get_scene_graph
 
 
 def parse_args():
@@ -69,25 +72,32 @@ def main():
     args = parse_args()
 
     # Load the model
-    if args.arch == "resdcn_50":
-        model = resdcn.get_kaf_resdcn(
+    if args.arch == "reskaf_50":
+        model = reskaf.get_kaf_resdcn(
             num_layers=50,
         )
-    elif args.arch == "resdcn_101":
-        model = resdcn.get_kaf_resdcn(
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
+    elif args.arch == "reskaf_18":
+        model = reskaf.get_kaf_resdcn(
+            num_layers=18,
+        )
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
+    elif args.arch == "reskaf_101":
+        model = reskaf.get_kaf_resdcn(
             num_layers=101,
         )
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif args.arch == "small_hg":
         model = hourglass.get_kaf_hourglass["hourglass_small"]
+        down_ratio = {"p2": 4}
     elif args.arch == "large_hg":
         model = hourglass.get_kaf_hourglass["hourglass_large"]
+        down_ratio = {"p2": 4}
     else:
         raise ValueError(f"Unsupported architecture: {args.arch}")
 
     # Load weights
-    model.load_state_dict(
-        torch.load(args.model_weights, map_location="cpu")["model_state_dict"]
-    )
+    model, _ = load_model_for_inference(model, args.model_weights)
     model.eval()  # Set model to evaluation mode
 
     # Move model to GPU if available
@@ -98,37 +108,55 @@ def main():
     inp_image, bbox = process_image_and_masks_mcm(args.image_path)
     inp_image = torch.from_numpy(inp_image).unsqueeze(0).to(device)
     print(inp_image.shape)
+    image_name = os.path.basename(args.image_path)
+    output_dir = os.path.join(
+        args.visualization_dir, f"{os.path.splitext(image_name)[0]}"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    shutil.copytree(
+        args.image_path, os.path.join(output_dir, image_name), dirs_exist_ok=True
+    )
 
     # Perform inference
     with torch.no_grad():
         outputs = model(inp_image)
         # The model output is a list containing one element, which is another list of tensors.
         # The inner list contains [hmap, regs, w_h_, raf]
-        hmap, regs, w_h_, raf = outputs
+        hmaps, regs, w_h_s, rafs = outputs
 
-        hmap = hmap[2]
-        regs = regs[2]
-        w_h_ = w_h_[2]
-        raf = raf[2]
+        for fpn_level in range(len(down_ratio)):
+            hmap = hmaps[fpn_level]
+            reg = regs[fpn_level]
+            w_h_ = w_h_s[fpn_level]
+            raf = rafs[fpn_level]
 
-        # Visualize outputs if requested
-        if args.visualize_output:
-            image_name = os.path.basename(args.image_path)
-            visualize_heatmap(hmap, args.visualization_dir, image_name)
-            visualize_raf(raf, args.visualization_dir, image_name, args.num_relations)
+            # Visualize outputs if requested
+            if args.visualize_output:
+                visualize_heatmap(hmap, output_dir, image_name, fpn_level)
+                visualize_raf(
+                    raf,
+                    output_dir,
+                    image_name,
+                    args.num_relations,
+                    fpn_level,
+                )
 
-    # Post-processing parameters
-    down_ratio_hmap = 32
-    down_ratio_reg = 16
-    down_ratio_wh = 8
-    down_ratio_raf = 4
-    max_objects = 100  # Maximum number of objects to detect
-    topk_relations = 50  # Top K relations to consider
+        # Post-processing parameters
+        max_objects = 100  # Maximum number of objects to detect
+        topk_relations = 50  # Top K relations to consider
+        get_scene_graph(
+            hmaps,
+            regs,
+            w_h_s,
+            rafs,
+            bbox,
+            topk_relations,
+        )
 
     # print(f"Inference complete. Results saved to {args.output_json_path}")
 
 
-def visualize_heatmap(hmap, output_dir, image_name):
+def visualize_heatmap(hmap, output_dir, image_name, fpn_level=0):
     """
     Visualizes and saves the heatmap.
     hmap: torch.Tensor of shape [1, num_classes, H, W]
@@ -160,13 +188,14 @@ def visualize_heatmap(hmap, output_dir, image_name):
 
         # Save the heatmap
         output_path = os.path.join(
-            output_dir, f"{os.path.splitext(image_name)[0]}_heatmap_class_{i}.png"
+            output_dir,
+            f"level_{fpn_level}_heatmap_class_{i}.png",
         )
         cv2.imwrite(output_path, heatmap_colored)
         print(f"Saved heatmap for class {i} to {output_path}")
 
 
-def visualize_raf(raf, output_dir, image_name, num_relations):
+def visualize_raf(raf, output_dir, image_name, num_relations, fpn_level=0):
     """
     Visualizes and saves the Relation Affinity Field (RAF).
     raf: torch.Tensor of shape [1, num_relations * 2, H, W]
@@ -223,7 +252,7 @@ def visualize_raf(raf, output_dir, image_name, num_relations):
         # Save the direction visualization
         output_path = os.path.join(
             output_dir,
-            f"{os.path.splitext(image_name)[0]}_raf_relation_{i}_direction.png",
+            f"level_{fpn_level}_raf_relation_{i}_direction.png",
         )
         cv2.imwrite(output_path, bgra_image)
         print(f"Saved RAF direction for relation {i} to {output_path}")

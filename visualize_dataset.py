@@ -63,7 +63,7 @@ def visualize_dataset(root_dir, img_size=512):
             0
         ].numpy()  # Added [0] for batch dim
         print(wh_level[wh_inds_level >= 1])
-        print(wh_inds_level[wh_inds_level >= 1])
+        print(wh_inds_level)
 
         axes = axes.flatten()
         titles = [

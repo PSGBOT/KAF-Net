@@ -205,3 +205,6 @@ debug_viz/
 
 # so
 *.so
+
+# image
+image/
