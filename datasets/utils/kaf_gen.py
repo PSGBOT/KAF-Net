@@ -136,10 +136,15 @@ def get_kaf(
 
     if range_wh is not None:
         # check the vector norm, if it is in the range
-        norm_range = torch.norm(range_wh, dim=0)
+        # norm_range = torch.norm(range_wh, dim=0)
+        # valid_rel_mask = torch.logical_and(
+        #     true_s2o_vectors_norms > norm_range[0],
+        #     true_s2o_vectors_norms <= norm_range[1],
+        # )
+
         valid_rel_mask = torch.logical_and(
-            true_s2o_vectors_norms > norm_range[0],
-            true_s2o_vectors_norms <= norm_range[1],
+            true_s2o_vectors_norms > range_wh[0],
+            true_s2o_vectors_norms <= range_wh[1],
         )
         # or either axis-aligned side
         # s2o_vectors_abs = torch.abs(s2o_vectors)

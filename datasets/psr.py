@@ -105,6 +105,18 @@ class PSRDataset(Dataset):
             sample_path = os.path.join(root_dir, sample_name)
             if os.path.isdir(sample_path):
                 self.samples.append(sample_path)
+        if len(self.down_ratio) == 4:
+            self.fpn_range = {
+                "p5": [128, 512],
+                "p4": [64, 128],
+                "p3": [32, 64],
+                "p2": [0, 32],
+                #      ^not conluded
+            }
+        else:
+            self.fpn_range = {
+                "p2": [0, 512],
+            }
 
         if 0 < split_ratio < 1:
             split_size = int(
@@ -410,7 +422,7 @@ class PSRDataset(Dataset):
         w_h_ms = []
         reg_inds_ms = []
         wh_inds_ms = []
-        ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
+        ind_masks_ms = []
         kaf_ms = []
         kaf_weight_ms = []
         for stride_key in self.down_ratio:
@@ -424,14 +436,29 @@ class PSRDataset(Dataset):
             reg = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
             reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
             wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
             obj_idx = 0
             for mask_name, cat_dict in masks_cat.items():
                 # Get bbox info for this mask
                 bbox_info = masks_bbox[mask_name]
-                center = bbox_info["center"]  # [x, y] in image space
                 # print(center)
                 scale = bbox_info["scale"]  # [w, h] in image space
+                w, h = scale
 
+                fpn_scale = max(w, h)
+
+                # only draw fmap for the object with corresponding scale
+                if not (
+                    self.fpn_range[stride_key][0]
+                    < fpn_scale
+                    <= self.fpn_range[stride_key][1]
+                ):
+                    # print(
+                    #     f"skip object {mask_name} with fpn {stride_key}, with scale {fpn_scale}"
+                    # )
+                    continue
+
+                center = bbox_info["center"]  # [x, y] in image space
                 # Transform center to feature map space
                 center_fmap = [
                     float(center[0] / stride),
@@ -440,8 +467,6 @@ class PSRDataset(Dataset):
                 center_fmap = np.array(center_fmap, dtype=np.float32)
                 center_int = center_fmap.astype(np.int32)
                 # print(center_int)
-
-                w, h = scale
 
                 for cat_idx in cat_dict:  # cat_idx is the category index
                     if cat_dict[cat_idx] == 0:
@@ -477,12 +502,14 @@ class PSRDataset(Dataset):
                     self.num_kr_cat,
                     stride,
                     (fmap_size, fmap_size),
+                    range_wh=self.fpn_range[stride_key],
                 )
             hmap_ms.append(hmap)
             reg_ms.append(reg)
             reg_inds_ms.append(reg_inds)
             w_h_ms.append(w_h_)
             wh_inds_ms.append(wh_inds)
+            ind_masks_ms.append(ind_masks)
             kaf_ms.append(raf_field.cpu())
             kaf_weight_ms.append(raf_weights.cpu())
 
@@ -528,7 +555,7 @@ class PSRDataset(Dataset):
             "wh_inds": wh_inds_ms,  # different scales for fpn
             "regs": reg_ms,  # different scales for fpn
             "reg_inds": reg_inds_ms,  # different scales for fpn
-            "ind_masks": ind_masks,
+            "ind_masks": ind_masks_ms,
             "gt_relations": kaf_ms,  # different scales for fpn
             "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
         }
