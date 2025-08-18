@@ -38,7 +38,7 @@ def ctdet_decode(hmap, regs, w_h_, down_ratio=4, K=100):
     hmap = _nms(hmap)  # perform nms on heatmaps
 
     scores, inds, clses, ys, xs = _topk(hmap, K=K)
-    print(xs)
+    # print(xs)
 
     regs = _tranpose_and_gather_feature(regs, inds)
     regs = regs.view(batch, K, 2)
@@ -52,8 +52,8 @@ def ctdet_decode(hmap, regs, w_h_, down_ratio=4, K=100):
     #     pass
     w_h_ = _tranpose_and_gather_feature(w_h_, inds)
     w_h_ = w_h_.view(batch, K, 2)
-    print(w_h_[:, :5, :])
-    print(regs[:, :5, :])
+    # print(w_h_[:, :5, :])
+    # print(regs[:, :5, :])
 
     clses = clses.view(batch, K, 1).float()
     scores = scores.view(batch, K, 1)

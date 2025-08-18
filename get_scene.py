@@ -119,10 +119,10 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
             relation_weights[i, j] = weights
 
             # visualize the weights use matplotlib
-            import matplotlib.pyplot as plt
-
-            plt.imshow(weights.cpu().numpy())
-            plt.show()
+            # import matplotlib.pyplot as plt
+            #
+            # plt.imshow(weights.cpu().numpy())
+            # plt.show()
 
     return relation_weights
 
@@ -142,31 +142,34 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.2, use_weights=True):
     """
     if len(objects) == 0:
         return []
+    fpn_range = {
+        0: [128, 512],  # stride 32
+        1: [64, 128],  # stride 16
+        2: [32, 64],  # stride 8
+        3: [0, 32],  # stride 4
+        #   ^not conluded
+    }
 
-    device = kaf_img.device
-    num_rel = kaf_img.shape[0] // 2
+    device = kaf_img[0].device
+    num_rel = kaf_img[0].shape[0] // 2
     relations = []
 
     if use_weights:
         # Pre-compute integration weights for all object pairs
-        weights = get_kaf_path(objects, sigma_factor=0.5)
+        weights = []
+        for fpn_level in range(len(fpn_range)):
+            weights.append(
+                get_kaf_path(
+                    objects, sigma_factor=0.5, stride=int(32 / pow(2, fpn_level))
+                )
+            )
 
         # Extract object scores for vectorized computation
         scores = torch.tensor([obj["score"] for obj in objects], device=device)
 
         # Vectorized computation for all relations
         for rel_type in range(num_rel):
-            # Get relation vector field [2, H, W]
-            kaf_vec = kaf_img[2 * rel_type : 2 * rel_type + 2]
-
-            # Compute confidence for all object pairs at once
-            # weights: [num_obj, num_obj, num_rel, H, W]
-            # kaf_vec: [2, H, W]
-            rel_weights = weights[:, :]  # [num_obj, num_obj, H, W]
-
-            # Compute dot product between vector field and relation direction
             confidences = torch.zeros(len(objects), len(objects), device=device)
-
             for i, subj in enumerate(objects):
                 for j, obj in enumerate(objects):
                     if i == j:
@@ -180,10 +183,30 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.2, use_weights=True):
                     )
                     rel_length = torch.norm(rel_vec)
 
+                    fpn_level = -1
                     if rel_length < 1e-6:
+                        continue
+                    else:
+                        for fpn_idx in range(len(fpn_range)):
+                            if (
+                                fpn_range[fpn_idx][0]
+                                < rel_length
+                                <= fpn_range[fpn_idx][1]
+                            ):
+                                fpn_level = fpn_idx
+                    if fpn_level == -1:
                         continue
 
                     rel_unit = rel_vec / rel_length
+                    # Get relation vector field [2, H, W]
+                    kaf_vec = kaf_img[fpn_level][2 * rel_type : 2 * rel_type + 2]
+
+                    # Compute confidence for all object pairs at once
+                    # weights: [num_obj, num_obj, num_rel, H, W]
+                    # kaf_vec: [2, H, W]
+                    rel_weights = weights[fpn_level]  # [num_obj, num_obj, H, W]
+
+                    # Compute dot product between vector field and relation direction
 
                     # Compute weighted dot product
                     dot_product = kaf_vec[0] * rel_unit[0] + kaf_vec[1] * rel_unit[1]
@@ -195,13 +218,13 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.2, use_weights=True):
             # Apply score weighting and threshold
             score_matrix = scores[:, None] * scores[None, :]  # [num_obj, num_obj]
             final_confidences = confidences * score_matrix
-            print(final_confidences)
+            # print(final_confidences)
 
             # Find relations above threshold
             valid_rels = final_confidences > rel_thresh
             subj_ids, obj_ids = torch.where(valid_rels)
-            print(valid_rels)
-            print(subj_ids, obj_ids)
+            # print(valid_rels)
+            # print(subj_ids, obj_ids)
 
             for subj_id, obj_id in zip(subj_ids.cpu(), obj_ids.cpu()):
                 if subj_id != obj_id:
@@ -601,7 +624,7 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
 
     # Process detections from each FPN level
     # for fpn_level in range(fpn_num):
-    for fpn_level in [3]:
+    for fpn_level in range(fpn_num):
         hmap = hmaps[fpn_level][0].unsqueeze(0)  # [1, 13, H, W]
         reg = regs[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
         w_h_ = w_h_s[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
@@ -673,9 +696,9 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
     # Extract relations using the highest resolution KAF map
     relations = []
     if objects and len(kafs) > 0:
-        kaf = kafs[-1][0]  # Use the highest resolution KAF map [28, H, W]
+        kaf = [k[0] for k in kafs]
         relations = fast_extract_relations(
-            kaf, objects, rel_thresh=0.2, use_weights=True
+            kaf, objects, rel_thresh=0.15, use_weights=True
         )
 
     scene_graph = {"objects": objects, "relations": relations}
