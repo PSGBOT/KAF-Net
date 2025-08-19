@@ -114,25 +114,33 @@ def get_kaf(
     # !important: objects can collapse into the same center
     leaf_centers = gt_centers[gt_relations[:, 0]]
     root_centers = gt_centers[gt_relations[:, 1]]
-    true_s2o_vectors = root_centers - leaf_centers
+    mid_centers = (leaf_centers + root_centers) / 2
+    true_m2o_vectors = mid_centers - leaf_centers
+    true_m2s_vectors = mid_centers - root_centers
     # if true vector collapse, we define vector [1e-6, 1e-6] for it
-    true_s2o_vectors[true_s2o_vectors.eq(0).all(dim=1)] += 1e-6
-    true_s2o_vectors_norms = torch.norm(true_s2o_vectors, dim=1, keepdim=False)
+    true_m2o_vectors[true_m2o_vectors.eq(0).all(dim=1)] += 1e-6
+    true_m2o_vectors_norms = torch.norm(true_m2o_vectors, dim=1, keepdim=False)
+    true_m2s_vectors[true_m2s_vectors.eq(0).all(dim=1)] += 1e-6
+    true_m2s_vectors_norms = torch.norm(true_m2s_vectors, dim=1, keepdim=False)
     # vector in feature
 
     leaf_centers = leaf_centers // output_stride
     root_centers = root_centers // output_stride
-    s2o_vectors = root_centers - leaf_centers
-    # s2o_vectors = object_centers.floor() - subject_centers.floor()
+    mid_centers = mid_centers // output_stride
+    m2o_vectors = mid_centers - leaf_centers
+    m2s_vectors = mid_centers - root_centers
     # if two centers are collapsed, we use true vector
-    zero_vec_mask = s2o_vectors.eq(0).all(dim=1)
-    s2o_vectors[zero_vec_mask] = true_s2o_vectors[zero_vec_mask]
+    zero_vec_mask = m2o_vectors.eq(0).all(dim=1)
+    m2o_vectors[zero_vec_mask] = true_m2o_vectors[zero_vec_mask]
+    zero_vec_mask = m2s_vectors.eq(0).all(dim=1)
+    m2s_vectors[zero_vec_mask] = true_m2s_vectors[zero_vec_mask]
     # right now it is a (1, 0) vector, not a random unit vector
     # rand_vec = torch.rand(2)
     # rand_vec /= rand_vec.norm()
     # s2o_vectors[zero_vec_mask] = torch.tensor([1.,0.], device=device)
     # shape (m, 1)
-    s2o_vector_norms = torch.norm(s2o_vectors, dim=1, keepdim=False)
+    m2o_vector_norms = torch.norm(m2o_vectors, dim=1, keepdim=False)
+    m2s_vector_norms = torch.norm(m2s_vectors, dim=1, keepdim=False)
 
     if range_wh is not None:
         # check the vector norm, if it is in the range
@@ -143,24 +151,30 @@ def get_kaf(
         # )
 
         valid_rel_mask = torch.logical_and(
-            true_s2o_vectors_norms > range_wh[0],
-            true_s2o_vectors_norms <= range_wh[1],
+            true_m2o_vectors_norms > range_wh[0],
+            true_m2o_vectors_norms <= range_wh[1],
         )
         # or either axis-aligned side
         # s2o_vectors_abs = torch.abs(s2o_vectors)
         # valid_rel_mask = torch.logical_and(s2o_vectors_abs > range_wh[..., 0],
         #                                    s2o_vectors_abs <= range_wh[..., 1]).any(dim=-1)
         gt_relations = gt_relations[valid_rel_mask]
-        s2o_vectors = s2o_vectors[valid_rel_mask]
-        s2o_vector_norms = s2o_vector_norms[valid_rel_mask][..., None]
+        m2o_vectors = m2o_vectors[valid_rel_mask]
+        m2s_vectors = m2s_vectors[valid_rel_mask]
+        m2o_vector_norms = m2o_vector_norms[valid_rel_mask][..., None]
+        m2s_vector_norms = m2s_vector_norms[valid_rel_mask][..., None]
         leaf_centers = leaf_centers[valid_rel_mask]
         root_centers = root_centers[valid_rel_mask]
+        mid_centers = mid_centers[valid_rel_mask]
         num_rels = gt_relations.size(0)
         # for some scales, there could be no relations
+        print(f"m2o_vec: {m2o_vectors}")
+        print(f"m2s_vec: {m2s_vectors}")
         if num_rels == 0:
             return rafs, rafs_weights
     else:
-        s2o_vector_norms = s2o_vector_norms[..., None]
+        m2o_vector_norms = m2o_vector_norms[..., None]
+        m2s_vector_norms = m2s_vector_norms[..., None]
 
     # count the number of raf overlap at each pixel location
     cross_raf_counts = torch.zeros((num_predicates,) + output_size, device=device)
@@ -182,9 +196,12 @@ def get_kaf(
         sigma = torch.ones((num_rels, 1, 1), device=device) * np.sqrt(
             128 / output_stride
         )
-    relation_unit_vecs = s2o_vectors / s2o_vector_norms  # shape (m, 2)
+    relation_unit_vecs_m2s = m2s_vectors / m2s_vector_norms  # List[shape (m, 2)]
+    relation_unit_vecs_m2o = m2o_vectors / m2o_vector_norms  # List[shape (m, 2)]
     # for assign weights, longer relation has smaller weights
-    relation_distance_weights = F.normalize(1 / s2o_vector_norms, p=2, dim=0)
+    relation_distance_weights = F.normalize(
+        1 / (m2o_vector_norms + m2s_vector_norms), p=2, dim=0
+    )
     # shape (m, w, h)
     m, y, x = torch.meshgrid(
         torch.arange(num_rels, device=device),
@@ -194,33 +211,57 @@ def get_kaf(
     # equation: v = (v_x, v_y) unit vector along s->o, a center point c = (c_x, c_y), any point p = (x, y)
     # <v, p - c> = v_x * (x - c_x) + v_y * (y - c_y) gives distance along the relation vector
     # <v⊥, p - c> gives distance orthogonal to the relation vector
-    dist_along_rel = torch.abs(
-        relation_unit_vecs[:, 0:1, None]
-        * (x - (leaf_centers[:, 0:1, None] + root_centers[:, 0:1, None]) / 2)
-        + relation_unit_vecs[:, 1:2, None]
-        * (y - (leaf_centers[:, 1:2, None] + root_centers[:, 1:2, None]) / 2)
+    dist_along_rel_m2s = torch.abs(
+        relation_unit_vecs_m2s[:, 0:1, None]
+        * (x - (mid_centers[:, 0:1, None] + root_centers[:, 0:1, None]) / 2)
+        + relation_unit_vecs_m2s[:, 1:2, None]
+        * (y - (mid_centers[:, 1:2, None] + root_centers[:, 1:2, None]) / 2)
+    )
+    dist_along_rel_m2o = torch.abs(
+        relation_unit_vecs_m2o[:, 0:1, None]
+        * (x - (mid_centers[:, 0:1, None] + leaf_centers[:, 0:1, None]) / 2)
+        + relation_unit_vecs_m2o[:, 1:2, None]
+        * (y - (mid_centers[:, 1:2, None] + leaf_centers[:, 1:2, None]) / 2)
     )
     dist_ortho_rel = torch.abs(
-        relation_unit_vecs[:, 1:2, None] * (x - leaf_centers[:, 0:1, None])
-        - relation_unit_vecs[:, 0:1, None] * (y - leaf_centers[:, 1:2, None])
+        relation_unit_vecs_m2o[:, 1:2, None] * (x - leaf_centers[:, 0:1, None])
+        - relation_unit_vecs_m2o[:, 0:1, None] * (y - leaf_centers[:, 1:2, None])
     )
     # valid = (dist_along_rel >= 0) \
     #         * (dist_along_rel <= s2o_vector_norms[..., None]) \
     #         * (dist_ortho_rel <= sigma)
-    valid = (dist_along_rel <= s2o_vector_norms[..., None] / 2 + sigma // 2) * (
+    print(dist_along_rel_m2s.shape, m2s_vector_norms.shape)
+    valid_m2s = (dist_along_rel_m2s <= m2s_vector_norms[..., None] // 2) * (
+        dist_ortho_rel <= sigma
+    )
+    valid_m2o = (dist_along_rel_m2o <= m2o_vector_norms[..., None] // 2) * (
         dist_ortho_rel <= sigma
     )
     # (m, w, h) <-- (m, 2) (m, w, h)
-    rafs_x = relation_unit_vecs[:, 0:1, None] * valid
-    rafs_y = relation_unit_vecs[:, 1:2, None] * valid
-    valid = valid.float()  # for computing the weights
+    rafs_x = (
+        relation_unit_vecs_m2s[:, 0:1, None] * valid_m2s
+        + relation_unit_vecs_m2o[:, 0:1, None] * valid_m2o
+    )
+    rafs_y = (
+        relation_unit_vecs_m2s[:, 1:2, None] * valid_m2s
+        + relation_unit_vecs_m2o[:, 1:2, None] * valid_m2o
+    )
+    valid = torch.max(valid_m2s, valid_m2o).float()  # for computing the weights
     rafs_weights_ortho_rel = (
         torch.min(
-            torch.exp(
-                -torch.clamp(
-                    dist_along_rel - s2o_vector_norms[..., None] / 2, min=0
-                ).round()
-                / 1
+            torch.max(
+                torch.exp(
+                    -torch.clamp(
+                        dist_along_rel_m2o - m2o_vector_norms[..., None] / 2, min=0
+                    ).round()
+                    / 1
+                ),
+                torch.exp(
+                    -torch.clamp(
+                        dist_along_rel_m2s - m2s_vector_norms[..., None] / 2, min=0
+                    ).round()
+                    / 1
+                ),
             ),
             torch.exp(-torch.round(dist_ortho_rel) / 1),
         )
