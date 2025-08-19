@@ -5,6 +5,7 @@ from scipy.ndimage import maximum_filter
 
 from utils.post_process import ctdet_decode
 import math
+from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
 
 
 @torch.no_grad()
@@ -85,7 +86,7 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
             perp_unit = torch.tensor([-line_unit[1], line_unit[0]], device=device)
 
             # Integration width for this pair
-            sigma = min(widths[i], widths[j]) / stride * sigma_factor
+            sigma = max(min(widths[i], widths[j]) / stride * sigma_factor, 0.5)
 
             # For each pixel, compute distance to the line
             # Vector from start point to each pixel
@@ -127,7 +128,7 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
     return relation_weights
 
 
-def fast_extract_relations(kaf_img, objects, rel_thresh=0.2, use_weights=True):
+def extract_relations(kaf_img, objects, rel_thresh=0.2):
     """
     Fast relation extraction using pre-computed weights and vectorized operations.
 
@@ -154,94 +155,89 @@ def fast_extract_relations(kaf_img, objects, rel_thresh=0.2, use_weights=True):
     num_rel = kaf_img[0].shape[0] // 2
     relations = []
 
-    if use_weights:
-        # Pre-compute integration weights for all object pairs
-        weights = []
-        for fpn_level in range(len(fpn_range)):
-            weights.append(
-                get_kaf_path(
-                    objects, sigma_factor=0.5, stride=int(32 / pow(2, fpn_level))
+    # Pre-compute integration weights for all object pairs
+    weights = []
+    for fpn_level in range(len(fpn_range)):
+        weights.append(
+            get_kaf_path(objects, sigma_factor=0.5, stride=int(32 / pow(2, fpn_level)))
+        )
+
+    # Extract object scores for vectorized computation
+    scores = torch.tensor([obj["score"] for obj in objects], device=device)
+
+    # Vectorized computation for all relations
+    for rel_type in range(num_rel):
+        confidences = torch.zeros(len(objects), len(objects), device=device)
+        for i, subj in enumerate(objects):
+            for j, obj in enumerate(objects):
+                if i == j:
+                    continue
+
+                # Get relation unit vector
+                y0, x0 = subj["yx"]
+                y1, x1 = obj["yx"]
+                rel_vec = torch.tensor(
+                    [x1 - x0, y1 - y0], device=device, dtype=torch.float32
                 )
-            )
+                rel_length = torch.norm(rel_vec)
 
-        # Extract object scores for vectorized computation
-        scores = torch.tensor([obj["score"] for obj in objects], device=device)
+                fpn_level = -1
+                if rel_length < 1e-6:
+                    continue
+                else:
+                    for fpn_idx in range(len(fpn_range)):
+                        if fpn_range[fpn_idx][0] < rel_length <= fpn_range[fpn_idx][1]:
+                            fpn_level = fpn_idx
+                            print(
+                                f"length {rel_length} ,use {fpn_level} level for relation"
+                            )
+                if fpn_level == -1:
+                    continue
 
-        # Vectorized computation for all relations
-        for rel_type in range(num_rel):
-            confidences = torch.zeros(len(objects), len(objects), device=device)
-            for i, subj in enumerate(objects):
-                for j, obj in enumerate(objects):
-                    if i == j:
-                        continue
+                rel_unit = rel_vec / rel_length
+                # Get relation vector field [2, H, W]
+                kaf_vec = kaf_img[fpn_level][2 * rel_type : 2 * rel_type + 2]
+                print(kaf_vec.shape)
 
-                    # Get relation unit vector
-                    y0, x0 = subj["yx"]
-                    y1, x1 = obj["yx"]
-                    rel_vec = torch.tensor(
-                        [y1 - y0, x1 - x0], device=device, dtype=torch.float32
-                    )
-                    rel_length = torch.norm(rel_vec)
+                # Compute confidence for all object pairs at once
+                # weights: [num_obj, num_obj, num_rel, H, W]
+                # kaf_vec: [2, H, W]
+                rel_weights = weights[fpn_level]  # [num_obj, num_obj, H, W]
 
-                    fpn_level = -1
-                    if rel_length < 1e-6:
-                        continue
-                    else:
-                        for fpn_idx in range(len(fpn_range)):
-                            if (
-                                fpn_range[fpn_idx][0]
-                                < rel_length
-                                <= fpn_range[fpn_idx][1]
-                            ):
-                                fpn_level = fpn_idx
-                    if fpn_level == -1:
-                        continue
+                # Compute dot product between vector field and relation direction
 
-                    rel_unit = rel_vec / rel_length
-                    # Get relation vector field [2, H, W]
-                    kaf_vec = kaf_img[fpn_level][2 * rel_type : 2 * rel_type + 2]
+                # Compute weighted dot product
+                dot_product = kaf_vec[0] * rel_unit[0] + kaf_vec[1] * rel_unit[1]
 
-                    # Compute confidence for all object pairs at once
-                    # weights: [num_obj, num_obj, num_rel, H, W]
-                    # kaf_vec: [2, H, W]
-                    rel_weights = weights[fpn_level]  # [num_obj, num_obj, H, W]
+                # Weighted integration
+                confidence = (rel_weights * dot_product).sum()
+                confidences[i, j] = confidence
 
-                    # Compute dot product between vector field and relation direction
+        # Apply score weighting and threshold
+        score_matrix = scores[:, None] * scores[None, :]  # [num_obj, num_obj]
+        final_confidences = confidences  # * score_matrix
+        # print(final_confidences)
 
-                    # Compute weighted dot product
-                    dot_product = kaf_vec[0] * rel_unit[0] + kaf_vec[1] * rel_unit[1]
+        # Find relations above threshold
+        valid_rels = final_confidences > rel_thresh
+        subj_ids, obj_ids = torch.where(valid_rels)
+        # print(valid_rels)
+        # print(subj_ids, obj_ids)
 
-                    # Weighted integration
-                    confidence = (rel_weights[i, j] * dot_product).sum()
-                    confidences[i, j] = confidence
-
-            # Apply score weighting and threshold
-            score_matrix = scores[:, None] * scores[None, :]  # [num_obj, num_obj]
-            final_confidences = confidences * score_matrix
-            # print(final_confidences)
-
-            # Find relations above threshold
-            valid_rels = final_confidences > rel_thresh
-            subj_ids, obj_ids = torch.where(valid_rels)
-            # print(valid_rels)
-            # print(subj_ids, obj_ids)
-
-            for subj_id, obj_id in zip(subj_ids.cpu(), obj_ids.cpu()):
-                if subj_id != obj_id:
-                    relations.append(
-                        {
-                            "subject_id": int(subj_id),
-                            "object_id": int(obj_id),
-                            "relation": rel_type,
-                            "confidence": float(final_confidences[subj_id, obj_id]),
-                            "subject_category": objects[subj_id]["category"],
-                            "object_category": objects[obj_id]["category"],
-                        }
-                    )
-
-    else:
-        # Fallback to original method if weights disabled
-        relations = extract_relations(kaf_img, objects, rel_thresh)
+        for subj_id, obj_id in zip(subj_ids.cpu(), obj_ids.cpu()):
+            if subj_id != obj_id:
+                relations.append(
+                    {
+                        "subject_id": int(subj_id),
+                        "object_id": int(obj_id),
+                        "relation": rel_type,
+                        "confidence": float(
+                            torch.sigmoid(final_confidences[subj_id, obj_id])
+                        ),
+                        "subject_category": objects[subj_id]["category"],
+                        "object_category": objects[obj_id]["category"],
+                    }
+                )
 
     return relations
 
@@ -391,117 +387,6 @@ def extract_objects(hmaps, reg_maps, w_h_maps, down_ratio=4, top_K=100):
     return objects
 
 
-def integrate_along_line(kaf_map, y0, x0, y1, x1, inte_width, debug=False):
-    # Bresenham's line algorithm or linear interpolation
-    num_points = int(np.hypot(y1 - y0, x1 - x0)) + 1
-    if num_points <= 0:
-        return 0
-    ys = np.linspace(y0, y1, num_points)
-    xs = np.linspace(x0, x1, num_points)
-    unitv = np.array([y1 - y0, x1 - x0])
-    norm = np.linalg.norm(unitv)
-    if norm == 0:
-        return 0
-    unitv = unitv / norm  # shape (2,)
-    # Perpendicular unit vector
-    perp = np.array([-unitv[1], unitv[0]])
-
-    dot_sum = 0
-    count = 0
-    visited = set()
-    # For each point along the line
-    for y, x in zip(ys, xs):
-        # For each offset along the perpendicular direction
-        for w in np.linspace(-inte_width, inte_width, int(2 * inte_width) + 1):
-            yy = y + perp[0] * w
-            xx = x + perp[1] * w
-            y_int, x_int = int(round(yy)), int(round(xx))
-            if (0 <= y_int < kaf_map.shape[1]) and (0 <= x_int < kaf_map.shape[2]):
-                key = (y_int, x_int)
-                if key in visited and debug:
-                    print(f"Repeated pixel: {key}")
-                    continue
-                visited.add(key)
-                vec = kaf_map[:, y_int, x_int].cpu().numpy()
-                dot_sum += np.dot(vec, unitv)
-                count += 1
-    if count == 0:
-        return 0
-    return dot_sum / count
-
-
-def extract_relations(kaf_img, objects, rel_thresh=0.3):
-    """
-    Extract relations between objects using Keypoint Affinity Fields (KAF).
-
-    Args:
-        kaf_img: tensor of shape [num_relations*2, H, W] containing vector fields for each relation type
-        objects: list of detected objects with their positions and scores
-        rel_thresh: confidence threshold for relation detection
-
-    Returns:
-        relations: list of detected relations with subject, object, relation type and confidence
-    """
-    relations = []
-    num_rel = (
-        kaf_img.shape[0] // 2
-    )  # Each relation has 2 channels (x, y vector components)
-
-    for i, subj in enumerate(objects):
-        for j, obj in enumerate(objects):
-            if i == j:
-                continue
-
-            # Get subject and object centers in feature map coordinates
-            subj_center = subj["yx"]  # [y, x] format
-            obj_center = obj["yx"]  # [y, x] format
-
-            y0, x0 = subj_center
-            y1, x1 = obj_center
-
-            # Process each relation type
-            for rel_type in range(num_rel):
-                # Get the 2D vector field for this relation type
-                kaf_vec = kaf_img[2 * rel_type : 2 * rel_type + 2]  # shape [2, H, W]
-                print(kaf_vec.shape)
-
-                # Calculate integration width based on object sizes
-                inte_width = (
-                    min(
-                        abs(subj["width"]),
-                        abs(obj["width"]),
-                        abs(subj["height"]),
-                        abs(obj["height"]),
-                    )
-                    / 4
-                )  # Use quarter of minimum dimension
-                inte_width = max(1, inte_width)  # Ensure minimum width of 1
-
-                # Integrate along the line connecting subject to object
-                line_confidence = integrate_along_line(
-                    kaf_vec, y0, x0, y1, x1, inte_width, debug=False
-                )
-
-                # Weight by object detection scores
-                final_confidence = line_confidence * subj["score"] * obj["score"]
-                print(final_confidence)
-
-                # Add relation if confidence exceeds threshold
-                if final_confidence > rel_thresh:
-                    relations.append(
-                        {
-                            "subject_id": subj["id"],
-                            "object_id": obj["id"],
-                            "relation": rel_type,
-                            "confidence": float(final_confidence),
-                            "subject_category": subj["category"],
-                            "object_category": obj["category"],
-                        }
-                    )
-
-    return relations
-
-
 def refine_dets_using_mask_bbox(dets, gt_bbox):
     """
     Refine object detections using mask-derived bounding boxes.
@@ -615,7 +500,7 @@ def refine_dets_using_mask_bbox(dets, gt_bbox):
     return refined_dets
 
 
-def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
+def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.15):
     # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
     fpn_num = len(hmaps)
     print(f"Receiving fmaps with {fpn_num} FPNs")
@@ -634,7 +519,7 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
         dets = dets.detach().cpu().numpy().reshape(1, -1, dets.shape[2])[0]
 
         # Apply score threshold and add to all_detections
-        valid_dets = dets[dets[:, 4] > 0.1]  # Filter by score > 0.1
+        valid_dets = dets[dets[:, 4] > thresh]  # Filter by score > 0.1
         if len(valid_dets) > 0:
             all_detections.append(valid_dets)
 
@@ -652,7 +537,7 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
         else:
             refined_dets = nms_dets
 
-        print(refined_dets)
+        # print(refined_dets)
 
         # Convert detections to object format
         objects = []
@@ -661,7 +546,9 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
 
             # Filter out low confidence predictions
             valid_scores_classes = [
-                [score, class_id] for score, class_id in scores_classes if score > 0.1
+                [score, class_id]
+                for score, class_id in scores_classes
+                if score > thresh
             ]
 
             if valid_scores_classes:
@@ -697,12 +584,10 @@ def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100):
     relations = []
     if objects and len(kafs) > 0:
         kaf = [k[0] for k in kafs]
-        relations = fast_extract_relations(
-            kaf, objects, rel_thresh=0.15, use_weights=True
-        )
+        relations = extract_relations(kaf, objects, rel_thresh=0.2)
 
     scene_graph = {"objects": objects, "relations": relations}
-    print(scene_graph)
+    visualize_scene_graph(scene_graph)
     return scene_graph
 
 
@@ -713,14 +598,14 @@ def visualize_scene_graph(scene_graph):
     # Visualize objects
     for obj in objects:
         print(
-            f"Object ID: {obj['id']}, Category: {obj['category']}, Center: {obj['center']}, Width: {obj['width']}, Height: {obj['height']}, Score: {obj['score']}, YX: {obj['yx']}"
+            f"Object ID: {obj['id']}, Category: {PSR_FUNC_CAT[obj['category']]}, Center: {obj['center']}, Width: {obj['width']}, Height: {obj['height']}, Score: {obj['score']}, YX: {obj['yx']}"
         )
 
     # Visualize relations
     if relations:
         for rel in relations:
             print(
-                f"Relation from Object {rel['subject_id']} to Object {rel['object_id']} of type {rel['relation']}, confidence: {rel['confidence']}"
+                f"Relation from Object {rel['subject_id']} to Object {rel['object_id']} of type {PSR_KR_CAT[rel['relation']]}, confidence: {rel['confidence']}"
             )
 
 

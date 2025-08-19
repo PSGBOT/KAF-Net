@@ -15,6 +15,7 @@ from nets.kaf import reskaf
 from nets.kaf import hourglass
 from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
 from get_scene import extract_objects, get_scene_graph
+from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
 
 
 def parse_args():
@@ -189,10 +190,10 @@ def visualize_heatmap(hmap, output_dir, image_name, fpn_level=0):
         # Save the heatmap
         output_path = os.path.join(
             output_dir,
-            f"level_{fpn_level}_heatmap_class_{i}.png",
+            f"level_{fpn_level}_heatmap_class_{PSR_FUNC_CAT[i]}.png",
         )
         cv2.imwrite(output_path, heatmap_colored)
-        print(f"Saved heatmap for class {i} to {output_path}")
+        # print(f"Saved heatmap for class {PSR_FUNC_CAT[i]} to {output_path}")
 
 
 def visualize_raf(raf, output_dir, image_name, num_relations, fpn_level=0):
@@ -207,6 +208,17 @@ def visualize_raf(raf, output_dir, image_name, num_relations, fpn_level=0):
     # RAF has 2 channels per relation (dx, dy)
     # We can visualize the magnitude or direction, or individual channels
     # For simplicity, let's visualize the magnitude of the vector field for each relation type
+
+    # get max magnitude
+    max_mag = 0
+    for i in range(num_relations):
+        dx = raf_np[i * 2]
+        dy = raf_np[i * 2 + 1]
+        magnitude = np.sqrt(dx**2 + dy**2)
+        if magnitude.max() > max_mag:
+            max_mag = magnitude.max()
+    print(f"max mag: {max_mag}")
+
     for i in range(num_relations):
         # Extract dx and dy channels for the current relation
         dx = raf_np[i * 2]
@@ -232,11 +244,7 @@ def visualize_raf(raf, output_dir, image_name, num_relations, fpn_level=0):
         # Calculate magnitude and normalize for Alpha channel
         magnitude = np.sqrt(dx**2 + dy**2)
         # Normalize magnitude to 0-255 for the alpha channel
-        alpha = (
-            (magnitude - magnitude.min())
-            / (magnitude.max() - magnitude.min() + 1e-8)
-            * 255
-        )
+        alpha = (magnitude - 0) / (max_mag - 0 + 1e-8) * 255
         alpha = alpha.astype(np.uint8)
 
         # Merge BGR channels with the alpha channel
@@ -252,10 +260,10 @@ def visualize_raf(raf, output_dir, image_name, num_relations, fpn_level=0):
         # Save the direction visualization
         output_path = os.path.join(
             output_dir,
-            f"level_{fpn_level}_raf_relation_{i}_direction.png",
+            f"level_{fpn_level}_raf_{i}_{PSR_KR_CAT[i]}_direction.png",
         )
         cv2.imwrite(output_path, bgra_image)
-        print(f"Saved RAF direction for relation {i} to {output_path}")
+        # print(f"Saved RAF direction for relation {PSR_KR_CAT[i]} to {output_path}")
 
 
 if __name__ == "__main__":
