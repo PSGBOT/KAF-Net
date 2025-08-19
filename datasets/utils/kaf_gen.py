@@ -168,8 +168,6 @@ def get_kaf(
         mid_centers = mid_centers[valid_rel_mask]
         num_rels = gt_relations.size(0)
         # for some scales, there could be no relations
-        print(f"m2o_vec: {m2o_vectors}")
-        print(f"m2s_vec: {m2s_vectors}")
         if num_rels == 0:
             return rafs, rafs_weights
     else:
@@ -230,7 +228,7 @@ def get_kaf(
     # valid = (dist_along_rel >= 0) \
     #         * (dist_along_rel <= s2o_vector_norms[..., None]) \
     #         * (dist_ortho_rel <= sigma)
-    print(dist_along_rel_m2s.shape, m2s_vector_norms.shape)
+    # print(dist_along_rel_m2s.shape, m2s_vector_norms.shape)
     valid_m2s = (dist_along_rel_m2s <= m2s_vector_norms[..., None] // 2) * (
         dist_ortho_rel <= sigma
     )
