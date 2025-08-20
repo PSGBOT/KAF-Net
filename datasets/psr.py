@@ -445,13 +445,13 @@ class PSRDataset(Dataset):
                 scale = bbox_info["scale"]  # [w, h] in image space
                 w, h = scale
 
-                fpn_scale = max(w, h)
+                fpn_scale = w * h
 
                 # only draw fmap for the object with corresponding scale
                 if not (
-                    self.fpn_range[stride_key][0]
+                    self.fpn_range[stride_key][0] ** 2
                     < fpn_scale
-                    <= self.fpn_range[stride_key][1]
+                    <= self.fpn_range[stride_key][1] ** 2
                 ):
                     # print(
                     #     f"skip object {mask_name} with fpn {stride_key}, with scale {fpn_scale}"

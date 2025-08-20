@@ -14,7 +14,7 @@ from utils.utils import load_model_for_inference
 from nets.kaf import reskaf
 from nets.kaf import hourglass
 from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
-from get_scene import extract_objects, get_scene_graph
+from get_scene import get_scene_graph
 from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
 
 
@@ -152,6 +152,7 @@ def main():
             rafs,
             bbox,
             topk_relations,
+            inp_image=inp_image,
         )
 
     # print(f"Inference complete. Results saved to {args.output_json_path}")
@@ -179,8 +180,9 @@ def visualize_heatmap(hmap, output_dir, image_name, fpn_level=0):
     for i in range(num_classes):
         heatmap = hmap_np[i]
         # Normalize to 0-255 for visualization
-        print(heatmap.max())
-        print(heatmap.min())
+        print(
+            f"level {fpn_level} class {PSR_FUNC_CAT[i]} {heatmap.max()} {heatmap.min()}"
+        )
         heatmap = (heatmap - min_heat) / (max_heat - min_heat + 1e-8) * 255
         heatmap = heatmap.astype(np.uint8)
 
@@ -217,7 +219,7 @@ def visualize_raf(raf, output_dir, image_name, num_relations, fpn_level=0):
         magnitude = np.sqrt(dx**2 + dy**2)
         if magnitude.max() > max_mag:
             max_mag = magnitude.max()
-    print(f"max mag: {max_mag}")
+    # print(f"max mag: {max_mag}")
 
     for i in range(num_relations):
         # Extract dx and dy channels for the current relation

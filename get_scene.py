@@ -6,6 +6,8 @@ from scipy.ndimage import maximum_filter
 from utils.post_process import ctdet_decode
 import math
 from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
+import cv2
+import matplotlib.pyplot as plt
 
 
 @torch.no_grad()
@@ -71,9 +73,10 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
             # Get line endpoints
             start = centers[i]  # [2] (y, x)
             end = centers[j]  # [2] (y, x)
+            mid = (start + end) / 2
 
             # Compute line direction and length
-            line_vec = end - start  # [2]
+            line_vec = mid - start  # [2]
             line_length = torch.norm(line_vec)
 
             if line_length < 1e-6:
@@ -170,16 +173,21 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2):
         confidences = torch.zeros(len(objects), len(objects), device=device)
         for i, subj in enumerate(objects):
             for j, obj in enumerate(objects):
-                if i == j:
+                if i < j:
                     continue
 
                 # Get relation unit vector
                 y0, x0 = subj["yx"]
                 y1, x1 = obj["yx"]
-                rel_vec = torch.tensor(
-                    [x1 - x0, y1 - y0], device=device, dtype=torch.float32
+                y_m = (y0 + y1) / 2
+                x_m = (x0 + x1) / 2
+                rel_vec_m20 = torch.tensor(
+                    [x_m - x0, y_m - y0], device=device, dtype=torch.float32
                 )
-                rel_length = torch.norm(rel_vec)
+                rel_vec_m21 = torch.tensor(
+                    [x_m - x1, y_m - y1], device=device, dtype=torch.float32
+                )
+                rel_length = torch.norm(rel_vec_m20)
 
                 fpn_level = -1
                 if rel_length < 1e-6:
@@ -188,30 +196,32 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2):
                     for fpn_idx in range(len(fpn_range)):
                         if fpn_range[fpn_idx][0] < rel_length <= fpn_range[fpn_idx][1]:
                             fpn_level = fpn_idx
-                            print(
-                                f"length {rel_length} ,use {fpn_level} level for relation"
-                            )
+                            # print(
+                            #     f"length {rel_length} ,use {fpn_level} level for relation"
+                            # )
                 if fpn_level == -1:
                     continue
 
-                rel_unit = rel_vec / rel_length
+                rel_unit_m20 = rel_vec_m20 / rel_length
+                rel_unit_m21 = rel_vec_m21 / rel_length
                 # Get relation vector field [2, H, W]
                 kaf_vec = kaf_img[fpn_level][2 * rel_type : 2 * rel_type + 2]
-                print(kaf_vec.shape)
-
-                # Compute confidence for all object pairs at once
-                # weights: [num_obj, num_obj, num_rel, H, W]
-                # kaf_vec: [2, H, W]
-                rel_weights = weights[fpn_level]  # [num_obj, num_obj, H, W]
-
-                # Compute dot product between vector field and relation direction
-
-                # Compute weighted dot product
-                dot_product = kaf_vec[0] * rel_unit[0] + kaf_vec[1] * rel_unit[1]
-
-                # Weighted integration
-                confidence = (rel_weights * dot_product).sum()
-                confidences[i, j] = confidence
+                rel_weights_m20 = weights[fpn_level][
+                    i, j
+                ]  # the line area between middle and object0
+                rel_weights_m21 = weights[fpn_level][
+                    j, i
+                ]  # the line area between middle and object1
+                dot_product_m20 = (
+                    kaf_vec[0] * rel_unit_m20[0] + kaf_vec[1] * rel_unit_m20[1]
+                )
+                dot_product_m21 = (
+                    kaf_vec[0] * rel_unit_m21[0] + kaf_vec[1] * rel_unit_m21[1]
+                )
+                confidence_m20 = (rel_weights_m20 * dot_product_m20).sum()
+                confidence_m21 = (rel_weights_m21 * dot_product_m21).sum()
+                print(confidence_m20, confidence_m21)
+                confidences[i, j] = confidence_m20 + confidence_m21
 
         # Apply score weighting and threshold
         score_matrix = scores[:, None] * scores[None, :]  # [num_obj, num_obj]
@@ -346,48 +356,41 @@ def apply_nms(dets, iou_threshold=0.5):
     return merged_dets
 
 
-def extract_objects(hmaps, reg_maps, w_h_maps, down_ratio=4, top_K=100):
-    # given the maps output from FPN model (stride 32, 16, 8, 4 => size 16, 32, 64, 128), extract valid objects with score
-    # map_shape: List[fmap_16(16, 16, c), fmap_32(32, 32, c), fmap_64(64, 64, c), fmap_128(128, 128, c)]
-    # Add a batch dimension of 1 to inputs, as ctdet_decode expects batched inputs
-    hmaps = hmaps.unsqueeze(0)
-    reg_maps = reg_maps.unsqueeze(0)
-    w_h_maps = w_h_maps.unsqueeze(0)
+def visualize_detections(dets, image):
+    """
+    Visualize object detections on an image.
 
-    detections = ctdet_decode(hmaps, reg_maps, w_h_maps, down_ratio, K=top_K)
+    Args:
+        dets: numpy array of detections with shape [N, 6] where each row is [x1, y1, x2, y2, score, class_id]
+        image: numpy array of image with shape [H, W, 3]
 
-    objects = []
-    # Detections are [x1, y1, x2, y2, score, class_id]
-    # We assume batch size is 1 here as extract_objects processes a single image's outputs
-    for k in range(detections.shape[1]):  # Iterate over K objects
-        det = detections[0, k]  # Get the k-th detection from the first (and only) batch
-        score = det[4].item()
-        if score < 0.1:  # Threshold to filter out low-confidence detections
-            continue
-
-        x1, y1, x2, y2 = det[0].item(), det[1].item(), det[2].item(), det[3].item()
-        category_id = int(det[5].item())
-
-        width = x2 - x1
-        height = y2 - y1
-        center_x = (x1 + x2) / 2
-        center_y = (y1 + y2) / 2
-
-        objects.append(
-            {
-                "id": k,
-                "category": category_id,
-                "center": [center_x, center_y],
-                "width": width,
-                "height": height,
-                "score": score,
-                "yx": [center_y, center_x],  # Assuming yx means [y, x]
-            }
+    Returns:
+        annotated_image: numpy array of annotated image with detections
+    """
+    annotated_image = image.copy()
+    for det in dets:
+        x1, y1, x2, y2, score_class = det
+        cv2.rectangle(
+            annotated_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2
         )
-    return objects
+        for s_c in score_class:
+            score, class_id = s_c
+            cv2.putText(
+                annotated_image,
+                f"{class_id}: {score:.2f}",
+                (int(x1 + 50), int(y1)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 0, 0),
+                2,
+            )
+
+    plt.imshow(annotated_image)
+    plt.show()
+    return annotated_image
 
 
-def refine_dets_using_mask_bbox(dets, gt_bbox):
+def get_dets_using_mask_bbox(hmaps, regs, w_h_s, gt_bbox, thresh=0.1):
     """
     Refine object detections using mask-derived bounding boxes.
 
@@ -398,187 +401,117 @@ def refine_dets_using_mask_bbox(dets, gt_bbox):
     Returns:
         refined_dets: numpy array of refined detections
     """
-    # Convert multi-class format back to single detections for refinement
-    single_dets = []
-    for det in dets:
-        x1, y1, x2, y2, scores_classes = det
-        for score, cls in scores_classes:
-            single_dets.append([x1, y1, x2, y2, score, cls])
-    dets = np.array(single_dets) if single_dets else np.empty((0, 6))
-    if len(dets) == 0 or len(gt_bbox) == 0:
-        print("No detections or ground truth bounding boxes found.")
-        return dets
+    fpn_range = {
+        0: [128, 512],  # stride 32
+        1: [64, 128],  # stride 16
+        2: [32, 64],  # stride 8
+        3: [0, 32],  # stride 4
+        #   ^not conluded
+    }
+    final_dets = [0] * len(gt_bbox)
 
-    refined_dets = []
+    for mask_id, mask_info in gt_bbox.items():
+        mask_center_x, mask_center_y = mask_info["center"]
+        mask_scale_x, mask_scale_y = mask_info["scale"]
+        mask_scale = mask_scale_x * mask_scale_y
 
-    for det in dets:
-        x1, y1, x2, y2, score, class_id = det
+        useful_level = 0
 
-        # Skip low confidence detections
-        if score < 0.1:
-            continue
+        raw_dets = []
+        for fpn_level, range in fpn_range.items():
+            if mask_scale <= range[1] ** 2 and mask_scale > range[0] ** 2:
+                useful_level = fpn_level
+                hmap = hmaps[fpn_level][0].unsqueeze(0)  # [1, 13, H, W]
+                reg = regs[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
+                w_h_ = w_h_s[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
+                dets = ctdet_decode(hmap, reg, w_h_, int(32 / pow(2, fpn_level)))
+                dets = dets.detach().cpu().numpy().reshape(1, -1, dets.shape[2])[0]
 
-        det_center_x = (x1 + x2) / 2
-        det_center_y = (y1 + y2) / 2
-        det_width = 1
-        det_height = 1
+                # Apply score threshold and add to all_detections
+                valid_dets = dets[dets[:, 4] > thresh]  # Filter by score > 0.1
+                if len(valid_dets) > 0:
+                    raw_dets = valid_dets
 
-        best_match_id = None
-        best_dist = 512
-
-        # Find the best matching mask bbox
-        for mask_id, mask_info in gt_bbox.items():
-            mask_center_x, mask_center_y = mask_info["center"]
-            mask_width, mask_height = mask_info["scale"]
-
-            # Convert mask bbox to x1, y1, x2, y2 format
-            mask_x1 = mask_center_x - mask_width / 2
-            mask_y1 = mask_center_y - mask_height / 2
-            mask_x2 = mask_center_x + mask_width / 2
-            mask_y2 = mask_center_y + mask_height / 2
-
-            if (
-                mask_x1 <= det_center_x <= mask_x2
-                and mask_y1 <= det_center_y <= mask_y2
-            ):
-                # calculate dist between det center and mask bbox center
-                dist = math.sqrt(
-                    (det_center_x - mask_center_x) ** 2
-                    + (det_center_y - mask_center_y) ** 2
-                )
-                # print(dist)
-
-                if dist < best_dist and dist < 20:  # Minimum IoU threshold
-                    best_dist = dist
-                    best_match_id = mask_id
-
-        # Refine detection using best matching mask bbox
-        if best_match_id is not None:
-            mask_info = gt_bbox[best_match_id]
-            mask_center_x, mask_center_y = mask_info["center"]
-            mask_width, mask_height = mask_info["scale"]
-
-            # Use weighted average of detection and mask bbox
-            weight_det = score
-            weight_mask = 2.5  # Fixed weight for mask information
-            total_weight = weight_det + weight_mask
-
-            # Weighted center
-            refined_center_x = (
-                det_center_x * weight_det + mask_center_x * weight_mask
-            ) / total_weight
-            refined_center_y = (
-                det_center_y * weight_det + mask_center_y * weight_mask
-            ) / total_weight
-
-            # Weighted size
-            refined_width = (
-                det_width * weight_det + mask_width * weight_mask
-            ) / total_weight
-            refined_height = (
-                det_height * weight_det + mask_height * weight_mask
-            ) / total_weight
-
-            # Convert back to x1, y1, x2, y2 format
-            refined_x1 = refined_center_x - refined_width / 2
-            refined_y1 = refined_center_y - refined_height / 2
-            refined_x2 = refined_center_x + refined_width / 2
-            refined_y2 = refined_center_y + refined_height / 2
-
-            refined_dets.append(
-                [refined_x1, refined_y1, refined_x2, refined_y2, score, class_id]
+        best_dist = int(32 / pow(2, useful_level)) * 1.5
+        best_det = [
+            mask_center_x - mask_scale_x / 2,
+            mask_center_y - mask_scale_y / 2,
+            mask_center_x + mask_scale_x / 2,
+            mask_center_y + mask_scale_y / 2,
+            [],
+        ]
+        for det in raw_dets:
+            x1, y1, x2, y2, _, _ = det
+            det_center_x, det_center_y = (x1 + x2) / 2, (y1 + y2) / 2
+            dist = math.sqrt(
+                (det_center_x - mask_center_x) ** 2
+                + (det_center_y - mask_center_y) ** 2
             )
+            if dist < best_dist:
+                best_dist = dist
+                best_det[4].append([det[4], det[5]])
+
+        if best_det is None:
+            print(f"No matching detection for mask {mask_id}")
+            return []
         else:
-            # Keep original detection if no good match found
-            refined_dets.append(det)
+            final_dets[mask_id] = best_det
 
-    # Convert back to multi-class format after refinement
-    refined_dets = apply_nms(
-        np.array(refined_dets) if refined_dets else np.empty((0, 6)), iou_threshold=0.5
-    )
-
-    return refined_dets
+    return final_dets
 
 
-def get_scene_graph(hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.15):
+def get_scene_graph(
+    hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.1, inp_image=None
+):
     # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
     fpn_num = len(hmaps)
     print(f"Receiving fmaps with {fpn_num} FPNs")
 
-    all_detections = []
-
-    # Process detections from each FPN level
-    # for fpn_level in range(fpn_num):
-    for fpn_level in range(fpn_num):
-        hmap = hmaps[fpn_level][0].unsqueeze(0)  # [1, 13, H, W]
-        reg = regs[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
-        w_h_ = w_h_s[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
-
-        # Extract detections from current FPN level
-        dets = ctdet_decode(hmap, reg, w_h_, int(32 / pow(2, fpn_level)), K=top_K)
-        dets = dets.detach().cpu().numpy().reshape(1, -1, dets.shape[2])[0]
-
-        # Apply score threshold and add to all_detections
-        valid_dets = dets[dets[:, 4] > thresh]  # Filter by score > 0.1
-        if len(valid_dets) > 0:
-            all_detections.append(valid_dets)
-
     # Combine detections from all FPN levels
-    if all_detections:
-        combined_dets = np.vstack(all_detections)
-
-        # Apply Non-Maximum Suppression to remove duplicate detections
-        nms_dets = apply_nms(combined_dets, iou_threshold=0.5)
-        # refined_dets = combined_dets
-
-        # Refine detections using mask bounding boxes if available
-        if bbox:
-            refined_dets = refine_dets_using_mask_bbox(nms_dets, bbox)
-        else:
-            refined_dets = nms_dets
-
-        # print(refined_dets)
-
-        # Convert detections to object format
-        objects = []
-        for idx, det in enumerate(refined_dets):
-            x1, y1, x2, y2, scores_classes = det
-
-            # Filter out low confidence predictions
-            valid_scores_classes = [
-                [score, class_id]
-                for score, class_id in scores_classes
-                if score > thresh
-            ]
-
-            if valid_scores_classes:
-                # Use the highest scoring class as the primary category
-                primary_score, primary_class = max(
-                    valid_scores_classes, key=lambda x: x[0]
-                )
-
-                width = x2 - x1
-                height = y2 - y1
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-
-                objects.append(
-                    {
-                        "id": idx,
-                        "category": int(primary_class),
-                        "center": [center_x, center_y],
-                        "width": width,
-                        "height": height,
-                        "score": float(primary_score),
-                        "yx": [center_y, center_x],
-                        "all_classes": [
-                            [float(score), int(class_id)]
-                            for score, class_id in valid_scores_classes
-                        ],
-                    }
-                )
+    # Refine detections using mask bounding boxes if available
+    if bbox:
+        refined_dets = get_dets_using_mask_bbox(hmaps, regs, w_h_s, bbox, thresh)
     else:
-        objects = []
+        print("fail")
+
+    visualize_detections(
+        refined_dets, (inp_image[0, 3:6, :, :].permute(1, 2, 0)).cpu().numpy()
+    )
+
+    # Convert detections to object format
+    objects = []
+    for idx, det in enumerate(refined_dets):
+        x1, y1, x2, y2, scores_classes = det
+
+        # Filter out low confidence predictions
+        valid_scores_classes = [
+            [score, class_id] for score, class_id in scores_classes if score > thresh
+        ]
+
+        if valid_scores_classes:
+            # Use the highest scoring class as the primary category
+            primary_score, primary_class = max(valid_scores_classes, key=lambda x: x[0])
+
+            width = x2 - x1
+            height = y2 - y1
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            objects.append(
+                {
+                    "id": idx,
+                    "category": int(primary_class),
+                    "center": [center_x, center_y],
+                    "width": width,
+                    "height": height,
+                    "score": float(primary_score),
+                    "yx": [center_y, center_x],
+                    "all_classes": [
+                        [float(score), int(class_id)]
+                        for score, class_id in valid_scores_classes
+                    ],
+                }
+            )
 
     # Extract relations using the highest resolution KAF map
     relations = []
