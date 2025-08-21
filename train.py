@@ -16,6 +16,7 @@ from datasets.psr import PSRDataset, PSRDataset_eval
 from nets.raf_loss import _kaf_loss
 
 from nets.kaf.kaf_resdcn import get_kaf_resdcn
+from nets.kaf.kaf_swint import get_kaf_swint
 from nets.kaf.hourglass import get_kaf_hourglass
 from nets.kaf.HRnet import get_kaf_hrnet
 from nets.kaf.resnet_pretrain import get_resnet50_fpn
@@ -168,6 +169,8 @@ def main():
         down_ratio = {"p2": 4}
     elif "resdcn" in cfg.arch:
         down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
+    elif "swin" in cfg.arch:
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif "hrnet" in cfg.arch:
         down_ratio = {"p2": 4}
     elif "resnet" in cfg.arch:
@@ -219,6 +222,12 @@ def main():
     elif "resdcn" in cfg.arch:
         model = get_kaf_resdcn(
             num_layers=int(cfg.arch.split("_")[-1]),
+            num_classes=train_dataset.num_func_cat,
+            num_rel=train_dataset.num_kr_cat,
+        )
+    elif "swin" in cfg.arch:
+        model = get_kaf_swint(
+            head_conv=64,
             num_classes=train_dataset.num_func_cat,
             num_rel=train_dataset.num_kr_cat,
         )
