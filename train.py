@@ -15,7 +15,7 @@ import numpy as np
 from datasets.psr import PSRDataset, PSRDataset_eval
 from nets.raf_loss import _kaf_loss
 
-from nets.kaf.reskaf import get_kaf_resdcn
+from nets.kaf.kaf_resdcn import get_kaf_resdcn
 from nets.kaf.hourglass import get_kaf_hourglass
 from nets.kaf.HRnet import get_kaf_hrnet
 from nets.kaf.resnet_pretrain import get_resnet50_fpn

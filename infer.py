@@ -11,7 +11,7 @@ import os
 import shutil
 from utils.utils import load_model_for_inference
 
-from nets.kaf import reskaf
+from nets.kaf import kaf_resdcn as reskaf
 from nets.kaf import hourglass
 from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
 from get_scene import get_scene_graph

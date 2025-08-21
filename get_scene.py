@@ -241,119 +241,13 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2):
                         "subject_id": int(subj_id),
                         "object_id": int(obj_id),
                         "relation": rel_type,
-                        "confidence": float(
-                            torch.sigmoid(final_confidences[subj_id, obj_id])
-                        ),
+                        "confidence": float(final_confidences[subj_id, obj_id]),
                         "subject_category": objects[subj_id]["category"],
                         "object_category": objects[obj_id]["category"],
                     }
                 )
 
     return relations
-
-
-def apply_nms(dets, iou_threshold=0.5):
-    """
-    Apply Non-Maximum Suppression to remove duplicate detections while preserving
-    detections with different classes but high IoU.
-
-    Args:
-        dets: numpy array of detections [N, 6] where each row is [x1, y1, x2, y2, score, class_id]
-        iou_threshold: IoU threshold for NMS
-
-    Returns:
-        filtered_dets: list of detections in format [x1, y1, x2, y2, [[score1, cls1], [score2, cls2], ...]]
-    """
-    if len(dets) == 0:
-        return []
-
-    # Sort by score (descending)
-    sorted_indices = np.argsort(dets[:, 4])[::-1]
-    sorted_dets = dets[sorted_indices]
-
-    merged_dets = []
-
-    while len(sorted_dets) > 0:
-        # Start with the detection with highest score
-        current_det = sorted_dets[0]
-        current_bbox = current_det[:4]  # [x1, y1, x2, y2]
-        current_score = current_det[4]
-        current_class = int(current_det[5])
-
-        # Initialize the merged detection with current detection's bbox and first score/class
-        merged_detection = {
-            "bbox": current_bbox.copy(),
-            "scores_classes": [[current_score, current_class]],
-        }
-
-        if len(sorted_dets) == 1:
-            merged_dets.append(
-                [*merged_detection["bbox"], merged_detection["scores_classes"]]
-            )
-            break
-
-        # Calculate IoU with remaining detections
-        remaining_dets = sorted_dets[1:]
-
-        # Calculate intersection
-        x1_inter = np.maximum(current_bbox[0], remaining_dets[:, 0])
-        y1_inter = np.maximum(current_bbox[1], remaining_dets[:, 1])
-        x2_inter = np.minimum(current_bbox[2], remaining_dets[:, 2])
-        y2_inter = np.minimum(current_bbox[3], remaining_dets[:, 3])
-
-        inter_area = np.maximum(0, x2_inter - x1_inter) * np.maximum(
-            0, y2_inter - y1_inter
-        )
-
-        # Calculate union
-        current_area = (current_bbox[2] - current_bbox[0]) * (
-            current_bbox[3] - current_bbox[1]
-        )
-        remaining_areas = (remaining_dets[:, 2] - remaining_dets[:, 0]) * (
-            remaining_dets[:, 3] - remaining_dets[:, 1]
-        )
-        union_area = current_area + remaining_areas - inter_area
-
-        # Calculate IoU
-        ious = inter_area / (union_area + 1e-8)
-
-        # Find detections with high IoU but different classes
-        high_iou_mask = ious >= iou_threshold
-        high_iou_dets = remaining_dets[high_iou_mask]
-
-        # Check for different classes among high IoU detections
-        for det in high_iou_dets:
-            det_class = int(det[5])
-            det_score = det[4]
-
-            # If it's a different class, add it to the merged detection
-            if det_class != current_class:
-                # Check if this class already exists in merged detection
-                existing_classes = [sc[1] for sc in merged_detection["scores_classes"]]
-                if det_class not in existing_classes:
-                    merged_detection["scores_classes"].append([det_score, det_class])
-                else:
-                    # Update score if this detection has higher score for the same class
-                    for i, (score, cls) in enumerate(
-                        merged_detection["scores_classes"]
-                    ):
-                        if cls == det_class and det_score > score:
-                            merged_detection["scores_classes"][i][0] = det_score
-
-        # Keep detections with IoU below threshold or same class
-        keep_mask = (ious < iou_threshold) | (remaining_dets[:, 5] == current_class)
-        # For same class detections with high IoU, we remove them (standard NMS behavior)
-        keep_mask = keep_mask & ~(
-            (ious >= iou_threshold) & (remaining_dets[:, 5] == current_class)
-        )
-        sorted_dets = remaining_dets[keep_mask]
-
-        # Add the merged detection to results
-        merged_dets.append(
-            [*merged_detection["bbox"], merged_detection["scores_classes"]]
-        )
-
-    return merged_dets
 
 
 def visualize_detections(dets, image):
@@ -520,11 +414,11 @@ def get_scene_graph(
         relations = extract_relations(kaf, objects, rel_thresh=0.2)
 
     scene_graph = {"objects": objects, "relations": relations}
-    visualize_scene_graph(scene_graph)
+    print_scene_graph(scene_graph)
     return scene_graph
 
 
-def visualize_scene_graph(scene_graph):
+def print_scene_graph(scene_graph):
     objects = scene_graph["objects"]
     relations = scene_graph["relations"]
 
@@ -540,26 +434,3 @@ def visualize_scene_graph(scene_graph):
             print(
                 f"Relation from Object {rel['subject_id']} to Object {rel['object_id']} of type {PSR_KR_CAT[rel['relation']]}, confidence: {rel['confidence']}"
             )
-
-
-if __name__ == "__main__":
-    # Example usage
-    # Assuming `kaf` is the output from the KAF-Net model
-    kaf = [
-        [
-            torch.zeros(1, 13, 32, 32),  # hmap
-            torch.randn(1, 2, 32, 32),  # regs
-            torch.randn(1, 2, 32, 32),  # w_h_
-            torch.randn(1, 28, 32, 32),  # kaf
-        ]
-    ]
-    kaf[-1][0][0][0][23][12] = 1
-    kaf[-1][0][0][0][13][20] = 1
-    kaf[-1][0][0][3][23][12] = 1
-    kaf[-1][0][0][3][13][20] = 1
-    print("Extracting scene graphs...")
-
-    for scene_graph in get_scene_graph(kaf):
-        visualize_scene_graph(scene_graph)
-# This code defines a function to extract scene graphs from the KAF-Net outputs
-# and visualize them. The actual extraction logic will depend on the specific dataset and task.
