@@ -85,7 +85,7 @@ class RAFLoss(nn.Module):
         effective_num = 1.0 - np.power(self.beta, samples_per_cls)
         weights = (1.0 - self.beta) / np.array(effective_num)
         weights = weights / np.sum(weights) * len(samples_per_cls)
-        print(weights)
+        # print(weights)
         return torch.FloatTensor(weights)
 
     def _apply_class_weights(self, loss, gt_raf_weights, device):
