@@ -71,7 +71,7 @@ class RAFLoss(nn.Module):
         self.beta = beta
         self.reduction = reduction
         self.loss_weight = loss_weight
-        self.neg_loss_weight = 1
+        self.neg_loss_weight = 0
         self.loss_func = F.l1_loss
         self.use_class_balanced = use_class_balanced
         # Compute class-balanced weights if enabled
