@@ -12,7 +12,7 @@ import shutil
 from utils.utils import load_model_for_inference
 
 from nets.kaf import kaf_resdcn as reskaf
-from nets.kaf.kaf_swint import get_kaf_swin_tiny, get_kaf_swin_small, get_kaf_swin_base
+from nets.kaf.kaf_swint import get_kaf_swint
 from nets.kaf import hourglass
 from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
 from get_scene import get_scene_graph
@@ -90,19 +90,10 @@ def main():
         )
         down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif "swin" in args.arch:
-        size = (int(args.arch.split("_")[-1]),)
-        if size == "t":
-            model = get_kaf_swin_tiny(
-                head_conv=64,
-            )
-        elif size == "s":
-            model = get_kaf_swin_small(
-                head_conv=64,
-            )
-        elif size == "b":
-            model = get_kaf_swin_base(
-                head_conv=64,
-            )
+        model = get_kaf_swint(
+            head_conv=64,
+        )
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif args.arch == "small_hg":
         model = hourglass.get_kaf_hourglass["hourglass_small"]
         down_ratio = {"p2": 4}
