@@ -96,6 +96,27 @@ def to_device(batch, device):
         return batch  # skip non-tensor types
 
 
+def compute_class_frequencies(dataset, num_relations):
+    return np.array(
+        [
+            1,  # unknow
+            20999,  # fixed
+            321,  # revolute free
+            3058,  # revolute controlled
+            17,  # revolute static
+            34,  # prismatic free
+            3058,  # prismatic controlled
+            6,  # prismatic static
+            3,  # spherical free
+            6,  # spherical controlled
+            6,  # spherical static
+            3107,  # supported
+            596,  # flexible
+            1348,  # unrelated
+        ]
+    )
+
+
 # from https://github.com/seominseok0429/pytorch-warmup-cosine-lr/blob/master/warmup_scheduler/scheduler.py
 class GradualWarmupScheduler(_LRScheduler):
     def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
@@ -216,6 +237,9 @@ def main():
         pin_memory=True,
     )
 
+    samples_per_cls = compute_class_frequencies(train_dataset, train_dataset.num_kr_cat)
+    print(f"Samples per class: {samples_per_cls}")
+
     print("Creating model...")
     if "hourglass" in cfg.arch:
         model = get_kaf_hourglass[cfg.arch]
@@ -318,6 +342,7 @@ def main():
                     raf,
                     batch["gt_relations"][fpn_idx],
                     batch["gt_relations_weights"][fpn_idx],
+                    samples_per_cls=samples_per_cls,
                 )
                 total_hmap_loss += hmap_loss
                 total_reg_loss += reg_loss
