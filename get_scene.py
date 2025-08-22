@@ -220,7 +220,7 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2):
                 )
                 confidence_m20 = (rel_weights_m20 * dot_product_m20).sum()
                 confidence_m21 = (rel_weights_m21 * dot_product_m21).sum()
-                print(confidence_m20, confidence_m21)
+                # print(confidence_m20, confidence_m21)
                 confidences[i, j] = confidence_m20 + confidence_m21
 
         # Apply score weighting and threshold
@@ -303,6 +303,7 @@ def get_dets_using_mask_bbox(hmaps, regs, w_h_s, gt_bbox, thresh=0.1):
         #   ^not conluded
     }
     final_dets = [0] * len(gt_bbox)
+    # print(gt_bbox)
 
     for mask_id, mask_info in gt_bbox.items():
         mask_center_x, mask_center_y = mask_info["center"]
@@ -367,10 +368,12 @@ def get_scene_graph(
         refined_dets = get_dets_using_mask_bbox(hmaps, regs, w_h_s, bbox, thresh)
     else:
         print("fail")
+        return None
 
-    visualize_detections(
-        refined_dets, (inp_image[0, 3:6, :, :].permute(1, 2, 0)).cpu().numpy()
-    )
+    if inp_image is not None:
+        visualize_detections(
+            refined_dets, (inp_image[0, 3:6, :, :].permute(1, 2, 0)).cpu().numpy()
+        )
 
     # Convert detections to object format
     objects = []
@@ -414,7 +417,7 @@ def get_scene_graph(
         relations = extract_relations(kaf, objects, rel_thresh=0.2)
 
     scene_graph = {"objects": objects, "relations": relations}
-    print_scene_graph(scene_graph)
+    # print_scene_graph(scene_graph)
     return scene_graph
 
 
@@ -432,5 +435,5 @@ def print_scene_graph(scene_graph):
     if relations:
         for rel in relations:
             print(
-                f"Relation from Object {rel['subject_id']} to Object {rel['object_id']} of type {PSR_KR_CAT[rel['relation']]}, confidence: {rel['confidence']}"
+                f"Relation Between Object {rel['subject_id']} and Object {rel['object_id']} of type {PSR_KR_CAT[rel['relation']]}, confidence: {rel['confidence']}"
             )

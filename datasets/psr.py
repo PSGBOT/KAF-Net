@@ -353,9 +353,11 @@ class PSRDataset(Dataset):
         masks_cat = {}
         kr = []
 
+        gt_ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
         # Initialize all the masks_cat
         for mask_idx in range(len(config["part center"])):
             masks_cat[mask_idx] = {}
+            gt_ind_masks[mask_idx] = 1
             for cat_idx in range(self.num_func_cat):
                 masks_cat[mask_idx][cat_idx] = 0
 
@@ -550,6 +552,7 @@ class PSRDataset(Dataset):
             "masks_cat": masks_cat,
             "masks_bbox_wh": gt_wh.cpu(),
             "masks_bbox_center": gt_centers.cpu(),
+            "gt_ind_mask": gt_ind_masks,
             "hmap": hmap_ms,  # different scales for fpn
             "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
             "wh_inds": wh_inds_ms,  # different scales for fpn

@@ -31,11 +31,12 @@ import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import matplotlib.pyplot as plt
+from utils.losses import compute_class_balanced_weights
 
 # torch.backends.cudnn.enabled = False
 
 # Training settings
-parser = argparse.ArgumentParser(description="simple_centernet45")
+parser = argparse.ArgumentParser(description="KAF-Net")
 
 parser.add_argument("--local_rank", type=int, default=0)
 parser.add_argument("--dist", action="store_true")
@@ -96,7 +97,7 @@ def to_device(batch, device):
         return batch  # skip non-tensor types
 
 
-def compute_class_frequencies(dataset, num_relations):
+def get_kaf_frequencies():
     return np.array(
         [
             1,  # unknow
@@ -113,6 +114,26 @@ def compute_class_frequencies(dataset, num_relations):
             3107,  # supported
             596,  # flexible
             1348,  # unrelated
+        ]
+    )
+
+
+def get_func_frequencies():
+    return np.array(
+        [
+            7977,  # "other",  # 0
+            7329,  # "handle",  # 1
+            8067,  # "housing",  # 2
+            31730,  # "support",  # 3
+            13100,  # "frame",  # 4
+            1934,  # "button",  # 5
+            256,  # "wheel",  # 6
+            2266,  # "display",  # 7
+            3499,  # "cover",  # 8
+            155,  # "plug",  # 9
+            123,  # "port",  # 10
+            10651,  # "door",  # 11
+            9375,  # "container",  # 12
         ]
     )
 
@@ -237,8 +258,14 @@ def main():
         pin_memory=True,
     )
 
-    samples_per_cls = compute_class_frequencies(train_dataset, train_dataset.num_kr_cat)
-    print(f"Samples per class: {samples_per_cls}")
+    samples_per_kaf = get_kaf_frequencies()
+    samples_per_func = get_func_frequencies()
+    func_cb_weights = compute_class_balanced_weights(
+        samples_per_func, device=cfg.device
+    )
+    print(f"Samples per func: {samples_per_func}")
+    print(f"Samples per func weights: {func_cb_weights}")
+    print(f"Samples per kaf: {samples_per_kaf}")
 
     print("Creating model...")
     if "hourglass" in cfg.arch:
@@ -331,7 +358,9 @@ def main():
                 #     f"w_h_ prediction range: {w_h_.min().item():.6f} to {w_h_.max().item():.6f}"
                 # )
 
-                hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][fpn_idx])
+                hmap_loss, hmap_final_loss = _neg_loss(
+                    hmap, batch["hmap"][fpn_idx], func_cb_weights
+                )
                 reg_loss = _reg_loss(
                     regs, batch["regs"][fpn_idx], batch["ind_masks"][fpn_idx]
                 )
@@ -342,7 +371,7 @@ def main():
                     raf,
                     batch["gt_relations"][fpn_idx],
                     batch["gt_relations_weights"][fpn_idx],
-                    samples_per_cls=samples_per_cls,
+                    samples_per_cls=samples_per_kaf,
                 )
                 total_hmap_loss += hmap_loss
                 total_reg_loss += reg_loss
