@@ -165,113 +165,143 @@ class PSRDataset(Dataset):
             flags=cv2.INTER_LINEAR,
         )
 
-        # Initialize an empty mask channel
-        combined_masks_channel = np.zeros(
-            (self.img_size["h"], self.img_size["w"]), dtype=np.uint8
+        # Initialize 3 RGB channels for masks
+        combined_masks_channels = np.zeros(
+            (self.img_size["h"], self.img_size["w"], 3), dtype=np.float32
         )
 
         # Load and process individual masks
         masks_dir = sample_path
         masks_bbox = {}
+
+        # Count total masks first to generate appropriate colors
+        mask_files = [f for f in os.listdir(masks_dir) if f.startswith("mask")]
+        num_masks = len(mask_files)
+        mask_colors = generate_mask_colors(num_masks, self.max_objs)
+
         if os.path.exists(masks_dir):
-            all_contours = []
-            for mask_filename in os.listdir(masks_dir):
-                if mask_filename.startswith(
-                    "mask"
-                ):  # Assuming masks: "mask0.png" "mask1.png"...
-                    mask_path = os.path.join(masks_dir, mask_filename)
-                    mask = Image.open(mask_path).convert("L")  # Load as grayscale
-                    # Resize mask to original image size before any transformations
-                    mask = mask.resize((width, height), Image.BILINEAR)
-                    mask = np.asarray(mask)
+            # Store individual masks for overlap resolution
+            individual_masks = {}
 
-                    # Apply the same flipping as src_img
-                    if flipped:
-                        mask = mask[:, ::-1]
+            # First pass: load all masks without combining
+            for mask_filename in mask_files:
+                mask_path = os.path.join(masks_dir, mask_filename)
+                mask = Image.open(mask_path).convert("L")  # Load as grayscale
+                # Resize mask to original image size before any transformations
+                mask = mask.resize((width, height), Image.BILINEAR)
+                mask = np.asarray(mask)
 
-                    # Apply the same affine transform as src_img
-                    mask = cv2.warpAffine(
-                        mask,
-                        trans_img,
-                        (self.img_size["w"], self.img_size["h"]),
-                        flags=cv2.INTER_LINEAR,
-                    )
+                # Apply the same flipping as src_img
+                if flipped:
+                    mask = mask[:, ::-1]
 
-                    # Now, process the mask to set border to 128 and inside to 255
-                    # Ensure mask is binary (0 or 255) for findContours
-                    mask_binary = (mask > 0).astype(np.uint8) * 255
+                # Apply the same affine transform as src_img
+                mask = cv2.warpAffine(
+                    mask,
+                    trans_img,
+                    (self.img_size["w"], self.img_size["h"]),
+                    flags=cv2.INTER_LINEAR,
+                )
 
-                    # find bbox scale of the mask
-                    bbox = cv2.boundingRect(mask_binary)
-                    # get the height and width
+                # Now, process the mask to set border to 128 and inside to 255
+                # Ensure mask is binary (0 or 255) for findContours
+                mask_binary = (mask > 0).astype(np.uint8) * 255
+
+                # find bbox scale of the mask
+                bbox = cv2.boundingRect(mask_binary)
+                # get the height and width
+                mask_height = bbox[3]
+                mask_width = bbox[2]
+                # get the center
+                mask_center = (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
+
+                mask_index = maskname_to_index(os.path.splitext(mask_filename)[0])
+                masks_bbox[mask_index] = {
+                    "center": mask_center,
+                    "scale": [mask_width, mask_height],
+                }
+
+                # Store the processed mask for overlap resolution
+                individual_masks[mask_index] = (mask_binary > 0).astype(np.uint8)
+
+            # Second pass: resolve overlaps using boolean subtraction
+            # Lower index masks have priority over higher index masks
+            resolved_masks = {}
+            sorted_mask_indices = sorted(individual_masks.keys())
+
+            for i, mask_idx in enumerate(sorted_mask_indices):
+                current_mask = individual_masks[mask_idx].copy()
+
+                # Subtract all previously processed masks (lower indices have priority)
+                for j in range(i):
+                    prev_mask_idx = sorted_mask_indices[j]
+                    if prev_mask_idx in resolved_masks:
+                        # Boolean subtraction: current_mask = current_mask AND NOT prev_mask
+                        current_mask = cv2.bitwise_and(
+                            current_mask, cv2.bitwise_not(resolved_masks[prev_mask_idx])
+                        )
+
+                resolved_masks[mask_idx] = current_mask
+
+                # Update bbox information based on resolved mask
+                if np.any(current_mask):
+                    bbox = cv2.boundingRect(current_mask)
                     mask_height = bbox[3]
                     mask_width = bbox[2]
-                    # get the center
                     mask_center = (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
 
-                    masks_bbox[
-                        maskname_to_index(os.path.splitext(mask_filename)[0])
-                    ] = {
+                    masks_bbox[mask_idx] = {
                         "center": mask_center,
                         "scale": [mask_width, mask_height],
                     }
+                else:
+                    # If mask is completely removed by subtraction, set empty bbox
+                    print("invalid mask")
+                    masks_bbox[mask_idx] = {
+                        "center": (0, 0),
+                        "scale": [0, 0],
+                    }
 
-                    kernel = np.ones((3, 3), np.uint8)
-                    erode_mask = cv2.erode(mask, kernel, iterations=1)
-                    contours, _ = cv2.findContours(
-                        erode_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    all_contours.extend(contours)
+            # Third pass: create colored mask channels using resolved masks
+            for mask_idx in resolved_masks:
+                # Get the color for this mask (ensure mask_index + 1 for proper color mapping)
+                color = mask_colors[min(mask_idx + 1, len(mask_colors) - 1)]
 
-                    # Combine with overall combined_masks_channel
-                    combined_masks_channel = np.maximum(
-                        combined_masks_channel, mask_binary
+                # Create colored mask
+                mask_normalized = resolved_masks[mask_idx].astype(np.float32)
+                for c in range(3):  # RGB channels
+                    channel_mask = mask_normalized * color[c]
+                    # Use maximum to overlay masks (brightest color wins)
+                    combined_masks_channels[:, :, c] = np.maximum(
+                        combined_masks_channels[:, :, c], channel_mask
                     )
-                cv2.drawContours(combined_masks_channel, all_contours, -1, (128,), 3)
 
         # Convert src_img and combined_masks_channel to float and normalize to 0-1
         src_img = src_img.astype(np.float32) / 255.0
-        combined_masks_channel = combined_masks_channel.astype(np.float32) / 255.0
 
-        # Concatenate along the channel dimension to create a 4-channel masked_img
+        # Concatenate along the channel dimension to create a 6-channel masked_img (3 RGB + 3 mask RGB)
         masked_img = np.concatenate(
-            (
-                src_img,
-                combined_masks_channel[:, :, np.newaxis],
-                combined_masks_channel[:, :, np.newaxis],
-                combined_masks_channel[:, :, np.newaxis],
-            ),
-            axis=2,
-        )  # [H, W, C+1]
+            (src_img, combined_masks_channels), axis=2
+        )  # [H, W, 6]
 
         # Color augmentation (applied only to the first 3 RGB channels of masked_img)
         if self.split == "train":
             color_aug(self.data_rng, masked_img[:, :, :3], self.eig_val, self.eig_vec)
 
         # Normalize and transpose (applied to all channels)
-        # Extend mean and std for the 4th channel (mask channel has 0 mean and 1 std)
+        # Extend mean and std for the mask channels (mask channels have 0 mean and 1 std)
         extended_mean = np.concatenate(
-            (
-                self.mean,
-                np.array([0.0], dtype=np.float32)[None, None, :],
-                np.array([0.0], dtype=np.float32)[None, None, :],
-                np.array([0.0], dtype=np.float32)[None, None, :],
-            ),
+            (self.mean, np.array([0.0, 0.0, 0.0], dtype=np.float32)[None, None, :]),
             axis=2,
         )
         extended_std = np.concatenate(
-            (
-                self.std,
-                np.array([1.0], dtype=np.float32)[None, None, :],
-                np.array([1.0], dtype=np.float32)[None, None, :],
-                np.array([1.0], dtype=np.float32)[None, None, :],
-            ),
+            (self.std, np.array([1.0, 1.0, 1.0], dtype=np.float32)[None, None, :]),
             axis=2,
         )
 
         masked_img -= extended_mean
         masked_img /= extended_std
-        masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, C+1] to [C+1, H, W]
+        masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, 6] to [6, H, W]
         return masked_img, masks_bbox
 
     def __getitem__(self, idx):
