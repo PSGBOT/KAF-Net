@@ -282,6 +282,7 @@ def main():
         split_ratio=args.split_ratio,
         down_ratio=down_ratio,
         img_size=args.img_size,
+        prune=False,
     )
 
     test_loader = DataLoader(
