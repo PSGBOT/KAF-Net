@@ -37,7 +37,7 @@ def calculate_iou(box1, box2):
     return inter_area / union_area
 
 
-def compute_ap50_for_class(predictions, ground_truths):
+def compute_ap50_for_class(predictions, ground_truths, iou_thresh=0.99):
     # This is the single-class AP50 function from the previous response.
     # It takes predictions and ground truths for a single class.
     # If there are no ground truths, AP is 0.
@@ -61,7 +61,7 @@ def compute_ap50_for_class(predictions, ground_truths):
                 best_iou = iou
                 best_gt_idx = j
 
-        if best_iou >= 0.5 and best_gt_idx not in matched_ground_truths:
+        if best_iou >= iou_thresh and best_gt_idx not in matched_ground_truths:
             tp[i] = 1
             matched_ground_truths.add(best_gt_idx)
         else:
@@ -99,14 +99,29 @@ def compute_map50(all_predictions, all_ground_truths, class_list):
     """
     class_aps = []
 
+    # expand all predictions
+    expanded_preds = []
+    for pred in all_predictions:
+        top_score = pred["score"]
+        rang = 0.1
+        for s_c in pred["classes"]:
+            if s_c[0] > top_score - rang:
+                expanded_preds.append(
+                    {"bbox": pred["bbox"], "score": s_c[0], "class_id": s_c[1]}
+                )
+
     for class_id in class_list:
         # Filter predictions and ground truths for the current class.
         class_preds = [
-            p for p in all_predictions if class_id == p["class_id"]
+            p for p in expanded_preds if class_id == p["class_id"]
         ]  # pred is single class
         class_gts = [
             gt for gt in all_ground_truths if class_id in gt["class_id"]
         ]  # gt is multi class
+
+        print(
+            f"Class ID: {class_id}, Number of predictions: {len(class_preds)}, Number of ground truths: {len(class_gts)}"
+        )
 
         # Compute AP50 for the current class.
         ap = compute_ap50_for_class(class_preds, class_gts)
@@ -116,6 +131,8 @@ def compute_map50(all_predictions, all_ground_truths, class_list):
     # Return the mean of all class APs.
     if not class_aps:
         return 0.0
+
+    print(f"APs for each class:\n {class_aps}")
     return np.mean(class_aps)
 
 

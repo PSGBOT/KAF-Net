@@ -238,10 +238,12 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2):
             if subj_id != obj_id:
                 relations.append(
                     {
-                        "subject_id": int(subj_id),
-                        "object_id": int(obj_id),
+                        "subject_id": subj_id,
+                        "subject_bbox": objects[subj_id]["bbox"],
+                        "object_id": obj_id,
+                        "object_bbox": objects[obj_id]["bbox"],
                         "relation": rel_type,
-                        "confidence": float(final_confidences[subj_id, obj_id]),
+                        "confidence": torch.sigmoid(final_confidences[subj_id, obj_id]),
                         "subject_category": objects[subj_id]["category"],
                         "object_category": objects[obj_id]["category"],
                     }
@@ -401,6 +403,7 @@ def get_scene_graph(
                     "center": [center_x, center_y],
                     "width": width,
                     "height": height,
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],  # x1, y1, w, h
                     "score": float(primary_score),
                     "yx": [center_y, center_x],
                     "all_classes": [
