@@ -572,7 +572,7 @@ class PSRDataset(Dataset):
             for cat_idx in range(self.num_func_cat):
                 masks_cat[mask_idx][cat_idx] = 0
 
-        if eval:
+        if eval is False:
             return {
                 "masked_img": masked_img,
                 "masks_cat": masks_cat,
