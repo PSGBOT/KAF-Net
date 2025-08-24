@@ -234,7 +234,13 @@ class PSRDataset(Dataset):
 
         # Concatenate along the channel dimension to create a 4-channel masked_img
         masked_img = np.concatenate(
-            (src_img, combined_masks_channel[:, :, np.newaxis]), axis=2
+            (
+                src_img,
+                combined_masks_channel[:, :, np.newaxis],
+                combined_masks_channel[:, :, np.newaxis],
+                combined_masks_channel[:, :, np.newaxis],
+            ),
+            axis=2,
         )  # [H, W, C+1]
 
         # Color augmentation (applied only to the first 3 RGB channels of masked_img)
@@ -244,16 +250,341 @@ class PSRDataset(Dataset):
         # Normalize and transpose (applied to all channels)
         # Extend mean and std for the 4th channel (mask channel has 0 mean and 1 std)
         extended_mean = np.concatenate(
-            (self.mean, np.array([0.0], dtype=np.float32)[None, None, :]), axis=2
+            (
+                self.mean,
+                np.array([0.0], dtype=np.float32)[None, None, :],
+                np.array([0.0], dtype=np.float32)[None, None, :],
+                np.array([0.0], dtype=np.float32)[None, None, :],
+            ),
+            axis=2,
         )
         extended_std = np.concatenate(
-            (self.std, np.array([1.0], dtype=np.float32)[None, None, :]), axis=2
+            (
+                self.std,
+                np.array([1.0], dtype=np.float32)[None, None, :],
+                np.array([1.0], dtype=np.float32)[None, None, :],
+                np.array([1.0], dtype=np.float32)[None, None, :],
+            ),
+            axis=2,
         )
 
         masked_img -= extended_mean
         masked_img /= extended_std
         masked_img = masked_img.transpose(2, 0, 1)  # from [H, W, C+1] to [C+1, H, W]
         return masked_img, masks_bbox
+
+    def __getitem__(self, idx):
+        sample_path = self.samples[idx]
+
+        # Load config.json
+        if self.prune:
+            config_path = os.path.join(sample_path, "pruned_config.json")
+        else:
+            config_path = os.path.join(sample_path, "config.json")
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        # Load src_img.png and masks, set the border of the masks to be 128(gray), combine these masks together into the 4th channel of the source image => `masked_img`
+        src_img_path = os.path.join(sample_path, "src_img.png")
+        src_img = Image.open(src_img_path)
+        # 如果是调色板模式，先转换
+        if src_img.mode == "P":
+            src_img = src_img.convert("RGBA")  # 转为带透明度格式
+        src_img = src_img.convert("RGB")
+        src_img = np.asarray(src_img)
+        height, width = src_img.shape[0], src_img.shape[1]
+        center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
+        scale = max(height, width) * 1.0
+
+        # Data augmentation parameters (determined once for both image and masks)
+        flipped = False
+        if self.split == "train":
+            scale = scale * np.random.choice(self.rand_scales)
+            # w_border = get_border(128, width)
+            # h_border = get_border(128, height)
+            # center[0] = np.random.randint(low=w_border, high=width - w_border)
+            # center[1] = np.random.randint(low=h_border, high=height - h_border)
+
+            if np.random.random() < 0.5:
+                flipped = True
+
+        # Affine transform matrix (determined once for both image and masks)
+        trans_img = get_affine_transform(
+            center, scale, 0, [self.img_size["w"], self.img_size["h"]]
+        )
+
+        masked_img, masks_bbox = self._process_image_and_masks(
+            sample_path,
+            src_img.copy(),
+            flipped,
+            trans_img,
+        )
+
+        masks_cat = {}
+        kr = []
+
+        gt_ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
+        # Initialize all the masks_cat
+        for mask_idx in range(len(config["part center"])):
+            masks_cat[mask_idx] = {}
+            gt_ind_masks[mask_idx] = 1
+            for cat_idx in range(self.num_func_cat):
+                masks_cat[mask_idx][cat_idx] = 0
+
+        # assign category index to each mask
+        for pair_relation in config["kinematic relation"]:
+            part0_cat_str_list = pair_relation[2]["part0_function"]
+            try:
+                for cat_str in part0_cat_str_list:
+                    part0_cat_idx = self.func_cat_ids.get(cat_str, 0)
+                    if (
+                        part0_cat_idx
+                        not in masks_cat[maskname_to_index(pair_relation[0])]
+                    ):
+                        masks_cat[maskname_to_index(pair_relation[0])][
+                            part0_cat_idx
+                        ] = 1
+                    else:
+                        masks_cat[maskname_to_index(pair_relation[0])][
+                            part0_cat_idx
+                        ] += 1
+
+                part1_cat_str_list = pair_relation[2]["part1_function"]
+                for cat_str in part1_cat_str_list:
+                    part1_cat_idx = self.func_cat_ids.get(cat_str, 0)
+                    if (
+                        part1_cat_idx
+                        not in masks_cat[maskname_to_index(pair_relation[1])]
+                    ):
+                        masks_cat[maskname_to_index(pair_relation[1])][
+                            part1_cat_idx
+                        ] = 1
+                    else:
+                        masks_cat[maskname_to_index(pair_relation[1])][
+                            part1_cat_idx
+                        ] += 1
+            except Exception as e:
+                print(f"error sample: {sample_path}")
+                raise e
+
+            kjs = pair_relation[2]["kinematic_joints"]
+            for kj in kjs:
+                relation_idx, root = self._parse_relations(kj)
+                if root == 0:
+                    kr.append(
+                        [
+                            maskname_to_index(pair_relation[1]),
+                            maskname_to_index(pair_relation[0]),
+                            relation_idx,
+                        ]
+                    )
+                else:
+                    kr.append(
+                        [
+                            maskname_to_index(pair_relation[0]),
+                            maskname_to_index(pair_relation[1]),
+                            relation_idx,
+                        ]
+                    )
+
+        # get gt for training
+
+        hmap_ms = []  # multiscale
+        reg_ms = []
+        w_h_ms = []
+        reg_inds_ms = []
+        wh_inds_ms = []
+        ind_masks_ms = []
+        kaf_ms = []
+        kaf_weight_ms = []
+        for stride_key in self.down_ratio:
+            stride = self.down_ratio[stride_key]
+            fmap_size = self.img_size["w"] // stride
+            hmap = np.zeros(
+                (self.num_func_cat, fmap_size, fmap_size),
+                dtype=np.float32,
+            )  # heatmap
+            w_h_ = np.zeros((self.max_objs, 2), dtype=np.float32)  # width and height
+            reg = np.zeros((self.max_objs, 2), dtype=np.float32)  # regression
+            reg_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            wh_inds = np.zeros((self.max_objs,), dtype=np.int64)
+            ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
+            obj_idx = 0
+            for mask_name, cat_dict in masks_cat.items():
+                # Get bbox info for this mask
+                bbox_info = masks_bbox[mask_name]
+                # print(center)
+                scale = bbox_info["scale"]  # [w, h] in image space
+                w, h = scale
+
+                fpn_scale = w * h
+
+                # only draw fmap for the object with corresponding scale
+                if not (
+                    self.fpn_range[stride_key][0] ** 2
+                    < fpn_scale
+                    <= self.fpn_range[stride_key][1] ** 2
+                ):
+                    # print(
+                    #     f"skip object {mask_name} with fpn {stride_key}, with scale {fpn_scale}"
+                    # )
+                    continue
+
+                center = bbox_info["center"]  # [x, y] in image space
+                # Transform center to feature map space
+                center_fmap = [
+                    float(center[0] / stride),
+                    float(center[1] / stride),
+                ]
+                center_fmap = np.array(center_fmap, dtype=np.float32)
+                center_int = center_fmap.astype(np.int32)
+                # print(center_int)
+
+                for cat_idx in cat_dict:  # cat_idx is the category index
+                    if cat_dict[cat_idx] == 0:
+                        continue
+                    # For each category this mask belongs to, draw a heatmap
+                    radius = max(
+                        0,
+                        int(
+                            gaussian_radius(
+                                (math.ceil(h), math.ceil(w)), self.gaussian_iou
+                            )
+                            / stride
+                            * 2
+                        ),
+                    )
+                    # print(radius)
+                    draw_umich_gaussian(hmap[cat_idx], center_int, radius, 1)
+
+                if obj_idx < self.max_objs:
+                    w_h_[obj_idx] = [w, h]
+                    reg[obj_idx] = center_fmap - center_int
+                    # print(regs[obj_idx])
+                    reg_inds[obj_idx] = center_int[1] * fmap_size + center_int[0]
+                    wh_inds[obj_idx] = center_int[1] * fmap_size + center_int[0]
+                    ind_masks[obj_idx] = 1
+                    obj_idx += 1
+
+            # generate kaf with gt relations and bbox
+            with torch.no_grad():
+                raf_field, raf_weights = get_kaf(
+                    kr,
+                    masks_bbox,
+                    self.num_kr_cat,
+                    stride,
+                    (fmap_size, fmap_size),
+                    range_wh=self.fpn_range[stride_key],
+                )
+            hmap_ms.append(hmap)
+            reg_ms.append(reg)
+            reg_inds_ms.append(reg_inds)
+            w_h_ms.append(w_h_)
+            wh_inds_ms.append(wh_inds)
+            ind_masks_ms.append(ind_masks)
+            kaf_ms.append(raf_field.cpu())
+            kaf_weight_ms.append(raf_weights.cpu())
+
+        gt_centers = np.zeros((len(masks_bbox), 2))
+        gt_wh = np.zeros((len(masks_bbox), 2))
+        for mask_idx in masks_bbox.keys():
+            gt_centers[mask_idx] = masks_bbox[mask_idx]["center"]
+            gt_wh[mask_idx] = masks_bbox[mask_idx]["scale"]
+        gt_centers = torch.tensor(gt_centers, device=self.device)
+        gt_wh = torch.tensor(gt_wh, device=self.device)
+
+        # for batch loading
+
+        # extend the gt_wh from [m, 2] to [self.max_objs, 2]
+        gt_wh = torch.cat(
+            (
+                gt_wh,
+                torch.zeros((self.max_objs - len(gt_wh), 2), device=self.device),
+            )
+        )
+
+        # extend the gt_centers from [m, 2] to [self.max_objs, 2]
+        gt_centers = torch.cat(
+            (
+                gt_centers,
+                torch.zeros((self.max_objs - len(gt_centers), 2), device=self.device),
+            )
+        )
+
+        # concatenate all the masks_cat for batch loading
+        for mask_idx in range(len(config["part center"]), self.max_objs):
+            masks_cat[mask_idx] = {}
+            for cat_idx in range(self.num_func_cat):
+                masks_cat[mask_idx][cat_idx] = 0
+
+        return {
+            "masked_img": masked_img,
+            "masks_cat": masks_cat,
+            "masks_bbox_wh": gt_wh.cpu(),
+            "masks_bbox_center": gt_centers.cpu(),
+            "gt_ind_mask": gt_ind_masks,
+            "hmap": hmap_ms,  # different scales for fpn
+            "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
+            "wh_inds": wh_inds_ms,  # different scales for fpn
+            "regs": reg_ms,  # different scales for fpn
+            "reg_inds": reg_inds_ms,  # different scales for fpn
+            "ind_masks": ind_masks_ms,
+            "gt_relations": kaf_ms,  # different scales for fpn
+            "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
+        }
+
+
+"""
+masked_img: [6, 512, 512]
+three RGB channels for the original image and three RGB channels for colored masks
+
+masks_cat structure:
+{
+  "mask0": {
+    cat1: number of shot,
+    cat2: number of shot,
+    ...
+  },
+  "mask1": {
+    ...
+  },
+  ...
+}
+
+masks_bbox_wh structure:
+[
+[w, h], # for mask 0
+[w, h], # for mask 1
+...
+]
+
+kr structure: [
+  ["mask0", "mask1", relation_idx],
+  ["mask0", "mask2", relation_idx],
+  ...
+]
+"""
+
+
+class PSRDataset_eval(PSRDataset):
+    def __init__(
+        self,
+        root_dir,
+        split,
+        split_ratio=1.0,
+        down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
+        img_size=512,
+        prune=True,
+    ):
+        super().__init__(
+            root_dir,
+            split,
+            split_ratio,
+            down_ratio=down_ratio,
+            img_size=img_size,
+            prune=prune,
+        )
+        print("==> Initializing PSR Dataset for evaluation")
 
     def __getitem__(self, idx):
         sample_path = self.samples[idx]
@@ -540,56 +871,3 @@ class PSRDataset(Dataset):
             "gt_kr": gt_kr,
             "gt_kr_idx": gt_kr_idx,
         }
-
-
-"""
-masked_img: [6, 512, 512]
-three RGB channels for the original image and three RGB channels for colored masks
-
-masks_cat structure:
-{
-  "mask0": {
-    cat1: number of shot,
-    cat2: number of shot,
-    ...
-  },
-  "mask1": {
-    ...
-  },
-  ...
-}
-
-masks_bbox_wh structure:
-[
-[w, h], # for mask 0
-[w, h], # for mask 1
-...
-]
-
-kr structure: [
-  ["mask0", "mask1", relation_idx],
-  ["mask0", "mask2", relation_idx],
-  ...
-]
-"""
-
-
-class PSRDataset_eval(PSRDataset):
-    def __init__(
-        self,
-        root_dir,
-        split,
-        split_ratio=1.0,
-        down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
-        img_size=512,
-        prune=True,
-    ):
-        super().__init__(
-            root_dir,
-            split,
-            split_ratio,
-            down_ratio=down_ratio,
-            img_size=img_size,
-            prune=prune,
-        )
-        print("==> Initializing PSR Dataset for evaluation")

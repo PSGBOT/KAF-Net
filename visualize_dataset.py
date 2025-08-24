@@ -19,8 +19,8 @@ def visualize_dataset(root_dir, img_size=512):
         masked_img = data["masked_img"][0].numpy()  # Get the first image from the batch
 
         # Define extended mean and std for 6 channels (3 RGB + 3 mask RGB)
-        extended_mean = np.array(PSR_MEAN + [0.0]).reshape(4, 1, 1)
-        extended_std = np.array(PSR_STD + [1.0]).reshape(4, 1, 1)
+        extended_mean = np.array(PSR_MEAN + [0.0, 0.0, 0.0]).reshape(6, 1, 1)
+        extended_std = np.array(PSR_STD + [1.0, 1.0, 1.0]).reshape(6, 1, 1)
 
         # Unnormalize the masked_img
         unnormalized_masked_img = masked_img * extended_std + extended_mean
@@ -75,7 +75,7 @@ def visualize_dataset(root_dir, img_size=512):
 
         # Display colored masks RGB (combined)
         ax = axes[4]
-        mask_rgb = unnormalized_masked_img[:, :, 3]
+        mask_rgb = unnormalized_masked_img[:, :, 3:6]
         ax.imshow(mask_rgb)
         ax.set_title(titles[4])
         ax.axis("off")
@@ -108,6 +108,13 @@ def visualize_dataset(root_dir, img_size=512):
         # if len(part_centers) > 0:
         #     ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
 
+        # Display individual mask RGB channels
+        for channel_idx in range(3):
+            ax = axes[channel_idx]
+            ax = axes[channel_idx + 5]
+            ax.imshow(unnormalized_masked_img[:, :, channel_idx + 3], cmap="gray")
+            ax.set_title(titles[channel_idx + 5])
+            ax.axis("off")
         # Select a specific FPN level for visualization (e.g., the coarsest level, which is the first one in the list)
         for fpn_level_idx in range(num_fpn):
             hmap_level = data["hmap"][fpn_level_idx][
