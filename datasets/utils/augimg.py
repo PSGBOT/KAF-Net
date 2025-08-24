@@ -3,6 +3,7 @@ import os
 import numpy as np
 from PIL import Image
 from utils.image import color_aug
+from utils.image import transform_preds, get_affine_transform
 
 
 def maskname_to_index(maskname="mask0"):
@@ -106,9 +107,17 @@ def process_image_and_masks(sample_path, img_size={"w": 512, "h": 512}):
 def process_image_and_masks_mcm(sample_path, img_size={"w": 512, "h": 512}):
     src_img_path = os.path.join(sample_path, "src_img.png")
     src_img = Image.open(src_img_path).convert("RGB")
-    src_img = src_img.resize((img_size["w"], img_size["h"]), Image.BILINEAR)
     src_img = np.asarray(src_img)
     height, width = src_img.shape[0], src_img.shape[1]
+    scale = max(height, width) * 1.0
+    center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
+    trans_img = get_affine_transform(center, scale, 0, [img_size["w"], img_size["h"]])
+    src_img = cv2.warpAffine(
+        src_img,
+        trans_img,
+        (img_size["w"], img_size["h"]),
+        flags=cv2.INTER_LINEAR,
+    )
 
     # Initialize 3 RGB channels for masks
     combined_masks_channels = np.zeros(
@@ -135,6 +144,12 @@ def process_image_and_masks_mcm(sample_path, img_size={"w": 512, "h": 512}):
             # Resize mask to original image size before any transformations
             mask = mask.resize((width, height), Image.BILINEAR)
             mask = np.asarray(mask)
+            mask = cv2.warpAffine(
+                mask,
+                trans_img,
+                (img_size["w"], img_size["h"]),
+                flags=cv2.INTER_LINEAR,
+            )
 
             # Now, process the mask to set border to 128 and inside to 255
             # Ensure mask is binary (0 or 255) for findContours

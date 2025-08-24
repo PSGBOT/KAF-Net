@@ -15,7 +15,8 @@ import numpy as np
 from datasets.psr import PSRDataset, PSRDataset_eval
 from nets.raf_loss import _kaf_loss
 
-from nets.kaf.reskaf import get_kaf_resdcn
+from nets.kaf.kaf_resdcn import get_kaf_resdcn
+from nets.kaf.kaf_swint import get_kaf_swint
 from nets.kaf.hourglass import get_kaf_hourglass
 from nets.kaf.HRnet import get_kaf_hrnet
 from nets.kaf.resnet_pretrain import get_resnet50_fpn
@@ -30,11 +31,12 @@ import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import matplotlib.pyplot as plt
+from utils.losses import compute_class_balanced_weights
 
 # torch.backends.cudnn.enabled = False
 
 # Training settings
-parser = argparse.ArgumentParser(description="simple_centernet45")
+parser = argparse.ArgumentParser(description="KAF-Net")
 
 parser.add_argument("--local_rank", type=int, default=0)
 parser.add_argument("--dist", action="store_true")
@@ -93,6 +95,47 @@ def to_device(batch, device):
         return [to_device(v, device) for v in batch]
     else:
         return batch  # skip non-tensor types
+
+
+def get_kaf_frequencies():
+    return np.array(
+        [
+            1,  # unknow
+            20999,  # fixed
+            321,  # revolute free
+            3058,  # revolute controlled
+            17,  # revolute static
+            34,  # prismatic free
+            3058,  # prismatic controlled
+            6,  # prismatic static
+            3,  # spherical free
+            6,  # spherical controlled
+            6,  # spherical static
+            3107,  # supported
+            596,  # flexible
+            1348,  # unrelated
+        ]
+    )
+
+
+def get_func_frequencies():
+    return np.array(
+        [
+            7977,  # "other",  # 0
+            7329,  # "handle",  # 1
+            8067,  # "housing",  # 2
+            31730,  # "support",  # 3
+            13100,  # "frame",  # 4
+            1934,  # "button",  # 5
+            256,  # "wheel",  # 6
+            2266,  # "display",  # 7
+            3499,  # "cover",  # 8
+            155,  # "plug",  # 9
+            123,  # "port",  # 10
+            10651,  # "door",  # 11
+            9375,  # "container",  # 12
+        ]
+    )
 
 
 # from https://github.com/seominseok0429/pytorch-warmup-cosine-lr/blob/master/warmup_scheduler/scheduler.py
@@ -168,6 +211,8 @@ def main():
         down_ratio = {"p2": 4}
     elif "resdcn" in cfg.arch:
         down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
+    elif "swin" in cfg.arch:
+        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif "hrnet" in cfg.arch:
         down_ratio = {"p2": 4}
     elif "resnet" in cfg.arch:
@@ -213,12 +258,27 @@ def main():
         pin_memory=True,
     )
 
+    samples_per_kaf = get_kaf_frequencies()
+    samples_per_func = get_func_frequencies()
+    func_cb_weights = compute_class_balanced_weights(
+        samples_per_func, device=cfg.device
+    )
+    print(f"Samples per func: {samples_per_func}")
+    print(f"Samples per func weights: {func_cb_weights}")
+    print(f"Samples per kaf: {samples_per_kaf}")
+
     print("Creating model...")
     if "hourglass" in cfg.arch:
         model = get_kaf_hourglass[cfg.arch]
     elif "resdcn" in cfg.arch:
         model = get_kaf_resdcn(
             num_layers=int(cfg.arch.split("_")[-1]),
+            num_classes=train_dataset.num_func_cat,
+            num_rel=train_dataset.num_kr_cat,
+        )
+    elif "swin" in cfg.arch:
+        model = get_kaf_swint(
+            head_conv=64,
             num_classes=train_dataset.num_func_cat,
             num_rel=train_dataset.num_kr_cat,
         )
@@ -298,7 +358,9 @@ def main():
                 #     f"w_h_ prediction range: {w_h_.min().item():.6f} to {w_h_.max().item():.6f}"
                 # )
 
-                hmap_loss, hmap_final_loss = _neg_loss(hmap, batch["hmap"][fpn_idx])
+                hmap_loss, hmap_final_loss = _neg_loss(
+                    hmap, batch["hmap"][fpn_idx], func_cb_weights
+                )
                 reg_loss = _reg_loss(
                     regs, batch["regs"][fpn_idx], batch["ind_masks"][fpn_idx]
                 )
@@ -309,6 +371,7 @@ def main():
                     raf,
                     batch["gt_relations"][fpn_idx],
                     batch["gt_relations_weights"][fpn_idx],
+                    samples_per_cls=samples_per_kaf,
                 )
                 total_hmap_loss += hmap_loss
                 total_reg_loss += reg_loss
@@ -318,7 +381,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.05 * w_h_loss + 2 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.01 * w_h_loss + 200 * kaf_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -419,7 +482,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.05 * w_h_loss + 2 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.01 * w_h_loss + 2 * kaf_loss
 
             total_b_hmap_loss += hmap_loss.item()
             total_b_reg_loss += reg_loss.item()

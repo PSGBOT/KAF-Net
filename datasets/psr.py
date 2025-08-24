@@ -84,8 +84,8 @@ class PSRDataset(Dataset):
 
         self.num_func_cat = len(self.func_cat)
         self.num_kr_cat = len(self.kr_cat)
-        self.max_objs = 128
-        self.max_rels = 512
+        self.max_objs = 32
+        self.max_rels = 64
 
         self.data_rng = np.random.RandomState(123)
         self.mean = np.array(PSR_MEAN, dtype=np.float32)[None, None, :]
@@ -353,9 +353,11 @@ class PSRDataset(Dataset):
         masks_cat = {}
         kr = []
 
+        gt_ind_masks = np.zeros((self.max_objs,), dtype=np.uint8)
         # Initialize all the masks_cat
         for mask_idx in range(len(config["part center"])):
             masks_cat[mask_idx] = {}
+            gt_ind_masks[mask_idx] = 1
             for cat_idx in range(self.num_func_cat):
                 masks_cat[mask_idx][cat_idx] = 0
 
@@ -445,13 +447,13 @@ class PSRDataset(Dataset):
                 scale = bbox_info["scale"]  # [w, h] in image space
                 w, h = scale
 
-                fpn_scale = max(w, h)
+                fpn_scale = w * h
 
                 # only draw fmap for the object with corresponding scale
                 if not (
-                    self.fpn_range[stride_key][0]
+                    self.fpn_range[stride_key][0] ** 2
                     < fpn_scale
-                    <= self.fpn_range[stride_key][1]
+                    <= self.fpn_range[stride_key][1] ** 2
                 ):
                     # print(
                     #     f"skip object {mask_name} with fpn {stride_key}, with scale {fpn_scale}"
@@ -539,6 +541,30 @@ class PSRDataset(Dataset):
             )
         )
 
+        # extend the gt_kr
+        gt_kr = [{}] * self.max_rels
+        gt_kr_idx = np.zeros((self.max_rels,), dtype=np.uint8)
+        # print(f"kr_len: {len(kr)}")
+        for idx in range(len(kr)):
+            gt_kr_idx[idx] = 1
+            rel = kr[idx]
+            sub_idx = rel[0]
+            sub_bbox = [
+                gt_centers[sub_idx][0] - gt_wh[sub_idx][0] / 2,
+                gt_centers[sub_idx][1] - gt_wh[sub_idx][1] / 2,
+                gt_wh[sub_idx][0],
+                gt_wh[sub_idx][1],
+            ]
+            obj_idx = rel[1]
+            obj_bbox = [
+                gt_centers[obj_idx][0] - gt_wh[obj_idx][0] / 2,
+                gt_centers[obj_idx][1] - gt_wh[obj_idx][1] / 2,
+                gt_wh[obj_idx][0],
+                gt_wh[obj_idx][1],
+            ]
+            rel_idx = rel[2]
+            gt_kr[idx] = {"sub_box": sub_bbox, "pred": rel_idx, "obj_box": obj_bbox}
+
         # concatenate all the masks_cat for batch loading
         for mask_idx in range(len(config["part center"]), self.max_objs):
             masks_cat[mask_idx] = {}
@@ -550,6 +576,7 @@ class PSRDataset(Dataset):
             "masks_cat": masks_cat,
             "masks_bbox_wh": gt_wh.cpu(),
             "masks_bbox_center": gt_centers.cpu(),
+            "gt_ind_mask": gt_ind_masks,
             "hmap": hmap_ms,  # different scales for fpn
             "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
             "wh_inds": wh_inds_ms,  # different scales for fpn
@@ -558,6 +585,8 @@ class PSRDataset(Dataset):
             "ind_masks": ind_masks_ms,
             "gt_relations": kaf_ms,  # different scales for fpn
             "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
+            "gt_kr": gt_kr,
+            "gt_kr_idx": gt_kr_idx,
         }
 
 

@@ -11,12 +11,12 @@ from torch.autograd import Variable
 
 
 class FPN(nn.Module):
-    def __init__(self):
+    def __init__(self, size):
         super(FPN, self).__init__()
 
         # Top layer
         self.top_layer = nn.Conv2d(
-            2048, 256, kernel_size=1, stride=1, padding=0
+            size * 8, 256, kernel_size=1, stride=1, padding=0
         )  # Reduce channels
 
         # Smooth layers
@@ -25,9 +25,9 @@ class FPN(nn.Module):
         self.smooth3 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
 
         # Lateral layers
-        self.lat_layer1 = nn.Conv2d(1024, 256, kernel_size=1, stride=1, padding=0)
-        self.lat_layer2 = nn.Conv2d(512, 256, kernel_size=1, stride=1, padding=0)
-        self.lat_layer3 = nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0)
+        self.lat_layer1 = nn.Conv2d(size * 4, 256, kernel_size=1, stride=1, padding=0)
+        self.lat_layer2 = nn.Conv2d(size * 2, 256, kernel_size=1, stride=1, padding=0)
+        self.lat_layer3 = nn.Conv2d(size, 256, kernel_size=1, stride=1, padding=0)
 
     def _upsample_add(self, x, y):
         """Upsample and add two feature maps.
@@ -67,5 +67,5 @@ class FPN(nn.Module):
         return [p2, p3, p4, p5]
 
 
-def get_fpn():
-    return FPN()
+def get_fpn(size=256):
+    return FPN(size)

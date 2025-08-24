@@ -4,6 +4,7 @@ import numpy as np
 from utils.utils import _tranpose_and_gather_feature, load_model
 
 from datasets.psr import PSRDataset, PSR_MEAN, PSR_STD, PSR_KR_CAT_IDX
+import cv2
 
 
 def visualize_dataset(root_dir, img_size=512):
@@ -217,21 +218,58 @@ def visualize_dataset(root_dir, img_size=512):
                     transform=ax.transAxes,
                 )
 
-            # Display RAF Field Magnitude (Fixed)
+            # Display RAF Field with Direction (color) and Magnitude (alpha) - Fixed
             ax = axes[7 + fpn_level_idx * 4 + 3]
             raf_field = (
                 data["gt_relations"][fpn_level_idx][0].cpu().numpy()
             )  # Added [0] for batch dim
             fixed_rel_idx = PSR_KR_CAT_IDX.get("fixed", -1)
-            if fixed_rel_idx != -1 and fixed_rel_idx < raf_field.shape[0]:
-                raf_field_fixed = raf_field[fixed_rel_idx]
-                # Calculate magnitude of the 2D vectors
-                raf_magnitude = np.linalg.norm(raf_field_fixed, axis=0)
-                ax.imshow(raf_magnitude, cmap="viridis")
-                ax.set_title("fixed kaf mag")
+
+            if fixed_rel_idx != -1:
+                # Extract dx and dy components for the fixed relation
+                # Assuming raf_field has shape [num_relations*2, H, W] where each relation has dx, dy channels
+                dx = raf_field[fixed_rel_idx][0]  # x component
+                dy = raf_field[fixed_rel_idx][1]  # y component
+
+                # Calculate magnitude and direction
+                magnitude = np.sqrt(dx**2 + dy**2)
+                angle = np.arctan2(dy, dx)  # Radians from -pi to pi
+
+                # Convert angle to degrees (0-360)
+                angle_degrees = (np.degrees(angle) + 180) % 360
+
+                # Normalize angle to 0-179 for OpenCV's H channel
+                hue = (angle_degrees / 2).astype(np.uint8)
+
+                # Create HSV image: Hue for direction, full Saturation and Value for base color
+                saturation = np.full_like(hue, 255, dtype=np.uint8)  # Full saturation
+                value = np.full_like(hue, 255, dtype=np.uint8)  # Full brightness
+
+                # Stack HSV channels and convert to RGB
+                hsv_image = cv2.merge([hue, saturation, value])
+                rgb_image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR)
+
+                # Normalize magnitude to 0-1 for alpha channel
+                max_mag = magnitude.max()
+                if max_mag > 0:
+                    alpha = magnitude / max_mag
+                else:
+                    alpha = np.zeros_like(magnitude)
+
+                # Create RGBA image: RGB for direction, Alpha for magnitude
+                rgba_image = np.concatenate(
+                    [
+                        rgb_image.astype(np.float32) / 255.0,  # Normalize RGB to 0-1
+                        alpha[..., np.newaxis],  # Add alpha channel
+                    ],
+                    axis=-1,
+                )
+
+                ax.imshow(rgba_image)
+                ax.set_title("fixed kaf (color=direction, alpha=magnitude)")
                 ax.axis("off")
             else:
-                ax.set_title("fixed kaf mag (Not Available)")
+                ax.set_title("fixed kaf (Not Available)")
                 ax.axis("off")
 
             # Display RAF Weights (Fixed)
