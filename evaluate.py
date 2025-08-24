@@ -162,8 +162,10 @@ def evaluate_model(model, test_loader, device, down_ratio, args, logger):
     all_obj_pred = []
     all_obj_gt = []
 
-    all_rel_pred = []
     all_rel_gt = []
+    all_rel_pred_10 = []
+    all_rel_pred_20 = []
+    all_rel_pred_40 = []
 
     logger.info("Starting evaluation...")
 
@@ -209,8 +211,11 @@ def evaluate_model(model, test_loader, device, down_ratio, args, logger):
                     "obj_box": rel_pred[rel_pred_idx]["sub_box"],
                     "score": rel_pred[rel_pred_idx]["score"],
                 }
+            bi_rel_pred.sort(key=lambda x: x["score"], reverse=True)
             # print(bi_rel_pred)
-            all_rel_pred.extend(bi_rel_pred)
+            all_rel_pred_10.extend(bi_rel_pred[:10])
+            all_rel_pred_20.extend(bi_rel_pred[:20])
+            all_rel_pred_40.extend(bi_rel_pred[:40])
 
         if batch_idx % 10 == 0:
             logger.info(f"Processed {batch_idx}/{len(test_loader)} batches")
@@ -218,12 +223,16 @@ def evaluate_model(model, test_loader, device, down_ratio, args, logger):
     fun_class_list = list(range(len(PSR_FUNC_CAT)))
     rel_class_list = list(range(len(PSR_KR_CAT)))
     map50 = compute_map50(all_obj_pred, all_obj_gt, fun_class_list)
-    print(map50)
-    recall = compute_rel_recall_for_class(all_rel_pred, all_rel_gt, 200)
-    print(recall)
-    mrecall = compute_rel_mean_recall(all_rel_pred, all_rel_gt, rel_class_list)
-    print(mrecall)
-    return map50, recall, mrecall
+    recall10 = compute_rel_recall_for_class(all_rel_pred_10, all_rel_gt)
+    recall20 = compute_rel_recall_for_class(all_rel_pred_20, all_rel_gt)
+    recall40 = compute_rel_recall_for_class(all_rel_pred_40, all_rel_gt)
+    mrecall10 = compute_rel_mean_recall(all_rel_pred_10, all_rel_gt, rel_class_list)
+    mrecall20 = compute_rel_mean_recall(all_rel_pred_20, all_rel_gt, rel_class_list)
+    mrecall40 = compute_rel_mean_recall(all_rel_pred_40, all_rel_gt, rel_class_list)
+    print(f"map50: {map50}")
+    print(f"recall10: {recall10}\n recall20: {recall20}\n recall40: {recall40}")
+    print(f"mrecall10: {mrecall10}\n mrecall20: {mrecall20}\n mrecall40: {mrecall40}")
+    return map50, [recall10, recall20, recall40], [mrecall10, mrecall20, mrecall40]
 
 
 def main():
@@ -331,11 +340,10 @@ def main():
         model, test_loader, args.device, down_ratio, args, logger
     )
 
-    print(f"\nEvaluation completed!")
-    print(f"mAP100: {map:.4f}\n Recall100: {recall:.4f}\n mRecall100: {mrecall:.4f}")
+    print("\nEvaluation completed!")
 
     # Save results
-    results = {"mAP50": map, "recall": recall}
+    results = {"mAP50": map, "recall": recall, "mrecall": mrecall}
 
     import json
 

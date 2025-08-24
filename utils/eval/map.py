@@ -37,7 +37,7 @@ def calculate_iou(box1, box2):
     return inter_area / union_area
 
 
-def compute_ap50_for_class(predictions, ground_truths, iou_thresh=0.99):
+def compute_ap50_for_class(predictions, ground_truths, iou_thresh=0.5):
     # This is the single-class AP50 function from the previous response.
     # It takes predictions and ground truths for a single class.
     # If there are no ground truths, AP is 0.
@@ -111,6 +111,7 @@ def compute_map50(all_predictions, all_ground_truths, class_list):
                 )
 
     for class_id in class_list:
+        print(f"compute map for func {class_id}")
         # Filter predictions and ground truths for the current class.
         class_preds = [
             p for p in expanded_preds if class_id == p["class_id"]

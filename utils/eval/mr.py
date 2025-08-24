@@ -1,7 +1,8 @@
 import numpy as np
+from tqdm import tqdm
 
 
-def compute_rel_recall_for_class(predictions, ground_truths, k=50, iou_threshold=0.99):
+def compute_rel_recall_for_class(predictions, ground_truths, iou_threshold=0.5):
     """
     Calculates the recall of a scene graph.
 
@@ -19,19 +20,16 @@ def compute_rel_recall_for_class(predictions, ground_truths, k=50, iou_threshold
         float: The recall at k.
     """
     if not ground_truths:
-        return 0.0
+        return -1
 
     # Sort predictions by confidence score in descending order.
     predictions.sort(key=lambda x: x["score"], reverse=True)
-
-    # Select the top-k predictions.
-    top_k_predictions = predictions[:k]
 
     # Create a list to track matched ground truths to avoid double counting.
     matched_ground_truths = [False] * len(ground_truths)
     true_positives = 0
 
-    for pred in top_k_predictions:
+    for pred in tqdm(predictions, desc=f"Processing {len(predictions)} predictions"):
         for gt_idx, gt in enumerate(ground_truths):
             if matched_ground_truths[gt_idx]:
                 continue
@@ -73,6 +71,7 @@ def compute_rel_mean_recall(all_predictions, all_ground_truths, class_list, k=20
     class_Rs = []
 
     for class_id in class_list:
+        print(f"compute recall for rel {class_id}")
         # Filter predictions and ground truths for the current class.
         class_preds = [
             p for p in all_predictions if class_id == p["pred"]
@@ -82,7 +81,7 @@ def compute_rel_mean_recall(all_predictions, all_ground_truths, class_list, k=20
         ]  # gt is multi class
 
         # Compute AP50 for the current class.
-        R = compute_rel_recall_for_class(class_preds, class_gts, k)
+        R = compute_rel_recall_for_class(class_preds, class_gts)
         if R != -1:
             class_Rs.append(R)
 

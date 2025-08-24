@@ -362,7 +362,6 @@ def get_scene_graph(
 ):
     # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
     fpn_num = len(hmaps)
-    print(f"Receiving fmaps with {fpn_num} FPNs")
 
     # Combine detections from all FPN levels
     # Refine detections using mask bounding boxes if available
