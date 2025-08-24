@@ -77,6 +77,7 @@ class PSRDataset(Dataset):
         self.root_dir = root_dir
         self.samples = []
         self.prune = prune
+        self.eval = eval
 
         self.func_cat = PSR_FUNC_CAT
         self.func_cat_ids = PSR_FUNC_CAT_IDX
@@ -649,6 +650,7 @@ class PSRDataset_eval(PSRDataset):
         down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
         prune=True,
+        eval=True,
     ):
         super().__init__(
             root_dir,
@@ -657,6 +659,6 @@ class PSRDataset_eval(PSRDataset):
             down_ratio=down_ratio,
             img_size=img_size,
             prune=prune,
-            eval=True,
+            eval=eval,
         )
         print("==> Initializing PSR Dataset for evaluation")
