@@ -259,8 +259,11 @@ def main():
         pin_memory=True,
     )
 
-    samples_per_kaf = get_kaf_frequencies()
-    samples_per_func = get_func_frequencies()
+    # samples_per_kaf = get_kaf_frequencies()
+    # samples_per_func = get_func_frequencies()
+    samples_per_kaf = np.ones(14)
+    samples_per_func = np.ones(13)
+
     func_cb_weights = compute_class_balanced_weights(
         samples_per_func, device=cfg.device
     )
