@@ -259,8 +259,10 @@ def main():
         pin_memory=True,
     )
 
-    samples_per_kaf = get_kaf_frequencies()
-    samples_per_func = get_func_frequencies()
+    # samples_per_kaf = get_kaf_frequencies()
+    # samples_per_func = get_func_frequencies()
+    samples_per_kaf = np.ones(14)
+    samples_per_func = np.ones(13)
     func_cb_weights = compute_class_balanced_weights(
         samples_per_func, device=cfg.device
     )
@@ -382,7 +384,7 @@ def main():
             reg_loss = total_reg_loss / len(down_ratio)
             w_h_loss = total_wh_loss / len(down_ratio)
             kaf_loss = total_kaf_loss / len(down_ratio)
-            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.01 * w_h_loss + 200 * kaf_loss
+            loss = 0.5 * hmap_loss + 0.5 * reg_loss + 0.01 * w_h_loss + 2 * kaf_loss
 
             optimizer.zero_grad()
             loss.backward()
