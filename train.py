@@ -248,6 +248,7 @@ def main():
         down_ratio=down_ratio,
         img_size=cfg.img_size,
         prune=cfg.prune,
+        eval=False,
     )
 
     val_loader = torch.utils.data.DataLoader(

@@ -70,12 +70,14 @@ class PSRDataset(Dataset):
         down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
         prune=True,
+        eval=False,
     ):
         print("==> Initializing PSR Dataset")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.root_dir = root_dir
         self.samples = []
         self.prune = prune
+        self.eval = eval
 
         self.func_cat = PSR_FUNC_CAT
         self.func_cat_ids = PSR_FUNC_CAT_IDX
@@ -571,23 +573,40 @@ class PSRDataset(Dataset):
             for cat_idx in range(self.num_func_cat):
                 masks_cat[mask_idx][cat_idx] = 0
 
-        return {
-            "masked_img": masked_img,
-            "masks_cat": masks_cat,
-            "masks_bbox_wh": gt_wh.cpu(),
-            "masks_bbox_center": gt_centers.cpu(),
-            "gt_ind_mask": gt_ind_masks,
-            "hmap": hmap_ms,  # different scales for fpn
-            "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
-            "wh_inds": wh_inds_ms,  # different scales for fpn
-            "regs": reg_ms,  # different scales for fpn
-            "reg_inds": reg_inds_ms,  # different scales for fpn
-            "ind_masks": ind_masks_ms,
-            "gt_relations": kaf_ms,  # different scales for fpn
-            "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
-            "gt_kr": gt_kr,
-            "gt_kr_idx": gt_kr_idx,
-        }
+        if self.eval is False:
+            return {
+                "masked_img": masked_img,
+                "masks_cat": masks_cat,
+                "masks_bbox_wh": gt_wh.cpu(),
+                "masks_bbox_center": gt_centers.cpu(),
+                "gt_ind_mask": gt_ind_masks,
+                "hmap": hmap_ms,  # different scales for fpn
+                "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
+                "wh_inds": wh_inds_ms,  # different scales for fpn
+                "regs": reg_ms,  # different scales for fpn
+                "reg_inds": reg_inds_ms,  # different scales for fpn
+                "ind_masks": ind_masks_ms,
+                "gt_relations": kaf_ms,  # different scales for fpn
+                "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
+            }
+        else:
+            return {
+                "masked_img": masked_img,
+                "masks_cat": masks_cat,
+                "masks_bbox_wh": gt_wh.cpu(),
+                "masks_bbox_center": gt_centers.cpu(),
+                "gt_ind_mask": gt_ind_masks,
+                "hmap": hmap_ms,  # different scales for fpn
+                "w_h_": w_h_ms,  # different scales for fpn [fpn, self.max_objs, 2]
+                "wh_inds": wh_inds_ms,  # different scales for fpn
+                "regs": reg_ms,  # different scales for fpn
+                "reg_inds": reg_inds_ms,  # different scales for fpn
+                "ind_masks": ind_masks_ms,
+                "gt_relations": kaf_ms,  # different scales for fpn
+                "gt_relations_weights": kaf_weight_ms,  # different scales for fpn
+                "gt_kr": gt_kr,
+                "gt_kr_idx": gt_kr_idx,
+            }
 
 
 """
@@ -631,6 +650,7 @@ class PSRDataset_eval(PSRDataset):
         down_ratio={"p5": 32, "p4": 16, "p3": 8, "p2": 4},
         img_size=512,
         prune=True,
+        eval=True,
     ):
         super().__init__(
             root_dir,
@@ -639,5 +659,6 @@ class PSRDataset_eval(PSRDataset):
             down_ratio=down_ratio,
             img_size=img_size,
             prune=prune,
+            eval=eval,
         )
         print("==> Initializing PSR Dataset for evaluation")
