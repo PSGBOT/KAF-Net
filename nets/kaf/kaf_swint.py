@@ -13,12 +13,12 @@ BN_MOMENTUM = 0.1
 
 
 class FeatureFusion(nn.Module):
-    """Feature fusion module to combine RGB and mask features"""
+    """CNN fusion module to convert 6-channel input (RGB + mask) to 3 channels"""
 
-    def __init__(self, rgb_channels, mask_channels, out_channels):
+    def __init__(self, in_channels=6, out_channels=3):
         super(FeatureFusion, self).__init__()
         self.fusion_conv = nn.Conv2d(
-            rgb_channels + mask_channels,
+            in_channels,
             out_channels,
             kernel_size=3,
             padding=1,
@@ -33,9 +33,9 @@ class FeatureFusion(nn.Module):
         )
         self.refine_bn = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
 
-    def forward(self, rgb_feat, mask_feat):
-        # Concatenate features
-        fused = torch.cat([rgb_feat, mask_feat], dim=1)
+    def forward(self, x):
+        # x is 6-channel input (RGB + mask)
+        fused = x
 
         # Apply fusion layers
         fused = self.fusion_conv(fused)
@@ -102,18 +102,18 @@ class KAF_SwinT(nn.Module):
         self.num_classes = num_classes
         self.num_rel = num_rel
 
+        # CNN fusion layer to convert 6 channels to 3 channels
+        self.input_fusion = FeatureFusion(in_channels=6, out_channels=3)
+
         swin = timm.create_model(
             "swinv2_tiny_window8_256.ms_in1k", pretrained=True, img_size=512
         )
-        # 分离 Swin 组件
+        # Extract Swin components
         self.patch_embed = swin.patch_embed
         self.stage1 = swin.layers[0]
         self.stage2 = swin.layers[1]
         self.stage3 = swin.layers[2]
         self.stage4 = swin.layers[3]
-        self.patch_embed_mask = swin.patch_embed
-        self.stage1_mask = copy.deepcopy(swin.layers[0])
-        self.feature_fusion = FeatureFusion(96, 96, 96)  # Keep for stage1 fusion
         self.fpn_1 = get_fpn(96)
         self.fpn_2 = get_fpn(96)
 
@@ -162,32 +162,19 @@ class KAF_SwinT(nn.Module):
                     nn.init.constant_(m.bias, 50.0)
 
     def forward(self, x):
-        # Split input into RGB and mask channels
-        rgb = x[:, :3, :, :]  # First 3 channels (RGB)
-        mask = x[:, 3:, :, :]  # Last 3 channels (masks)
+        # Fuse 6-channel input to 3-channel using CNN
+        x = self.input_fusion(x)  # Convert from 6 channels to 3 channels
 
-        # ---- RGB branch stage1 ----
-        rgb = self.patch_embed(rgb)
-        rgb_feat1 = self.stage1(rgb)
-
-        # ---- Mask branch stage1 ----
-        mask = self.patch_embed_mask(mask)
-        mask_feat1 = self.stage1_mask(mask)
-
-        rgb_feat1 = rgb_feat1.permute(0, 3, 1, 2).contiguous()
-        mask_feat1 = mask_feat1.permute(0, 3, 1, 2).contiguous()
-        # ---- Fusion ----
-        fused_feat1 = self.feature_fusion(rgb_feat1, mask_feat1)
-        fused_feat1 = fused_feat1.permute(0, 2, 3, 1)
-
-        # ---- Shared stage2–4 ----
-        feat2 = self.stage2(fused_feat1)
+        # Pass through single SwinT backbone
+        x = self.patch_embed(x)
+        feat1 = self.stage1(x)
+        feat2 = self.stage2(feat1)
         feat3 = self.stage3(feat2)
         feat4 = self.stage4(feat3)
 
         # ---- FPN ----
         feats = [
-            fused_feat1.permute(0, 3, 1, 2).contiguous(),
+            feat1.permute(0, 3, 1, 2).contiguous(),
             feat2.permute(0, 3, 1, 2).contiguous(),
             feat3.permute(0, 3, 1, 2).contiguous(),
             feat4.permute(0, 3, 1, 2).contiguous(),
