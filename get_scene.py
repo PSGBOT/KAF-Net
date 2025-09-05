@@ -131,7 +131,7 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
     return relation_weights
 
 
-def extract_relations(kaf_img, objects, rel_thresh=0.2):
+def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
     """
     Fast relation extraction using pre-computed weights and vectorized operations.
 
@@ -196,9 +196,10 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2):
                     for fpn_idx in range(len(fpn_range)):
                         if fpn_range[fpn_idx][0] < rel_length <= fpn_range[fpn_idx][1]:
                             fpn_level = fpn_idx
-                            # print(
-                            #     f"length {rel_length} ,use {fpn_level} level for relation"
-                            # )
+                            if debug:
+                                print(
+                                    f"length {rel_length} ,use {fpn_level} level for relation"
+                                )
                 if fpn_level == -1:
                     continue
 
@@ -358,7 +359,7 @@ def get_dets_using_mask_bbox(hmaps, regs, w_h_s, gt_bbox, thresh=0.1):
 
 
 def get_scene_graph(
-    hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.1, inp_image=None
+    hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.1, inp_image=None, debug=False
 ):
     # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
     fpn_num = len(hmaps)
@@ -416,10 +417,11 @@ def get_scene_graph(
     relations = []
     if objects and len(kafs) > 0:
         kaf = [k[0] for k in kafs]
-        relations = extract_relations(kaf, objects, rel_thresh=0.2)
+        relations = extract_relations(kaf, objects, rel_thresh=0.2, debug=debug)
 
     scene_graph = {"objects": objects, "relations": relations}
-    # print_scene_graph(scene_graph)
+    if debug:
+        print_scene_graph(scene_graph)
     return scene_graph
 
 
