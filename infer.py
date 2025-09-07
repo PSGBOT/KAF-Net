@@ -1,5 +1,6 @@
 import argparse
 import json
+from logging import debug
 from multiprocessing import process
 import torch
 import numpy as np
@@ -159,6 +160,7 @@ def main():
             bbox,
             topk_relations,
             inp_image=inp_image,
+            debug=True,
         )
 
     # print(f"Inference complete. Results saved to {args.output_json_path}")
