@@ -97,11 +97,11 @@ class DCNLayer(nn.Module):
 
 
 class KAF_SwinT(nn.Module):
-    def __init__(self, head_conv, num_classes, num_rel):
+    def __init__(self, head_conv, num_classes, num_rel, use_kaf = True):
         super().__init__()
         self.num_classes = num_classes
         self.num_rel = num_rel
-
+        self.use_kaf = use_kaf # store the flag to determine whether it is baseline classifier or KAF vector field head
         swin = timm.create_model(
             "swinv2_tiny_window8_256.ms_in1k", pretrained=True, img_size=512
         )
@@ -127,13 +127,30 @@ class KAF_SwinT(nn.Module):
             )
             self.hmap[-1].bias.data.fill_(-2.19)
 
-            self.raf = nn.Sequential(
-                DCNLayer(256, head_conv, kernel_size=3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(head_conv, self.num_rel * 2, kernel_size=1, bias=True),
-            )
-            self.raf[-1].bias.data.fill_(-2.19)
+            # self.raf = nn.Sequential(
+            #     DCNLayer(256, head_conv, kernel_size=3, padding=1),
+            #     nn.ReLU(inplace=True),
+            #     nn.Conv2d(head_conv, self.num_rel * 2, kernel_size=1, bias=True),
+            # )
+            # self.raf[-1].bias.data.fill_(-2.19)
 
+            if use_kaf:
+                # Original KAF vector field head: outputs num_rel * 2 channels
+                self.raf = nn.Sequential(
+                    DCNLayer(256, head_conv, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(head_conv, self.num_rel * 2, kernel_size=1, bias=True),
+                )
+                self.raf[-1].bias.data.fill_(-2.19)
+            else:
+                # Classification baseline: outputs num_rel channels (one score per relation type)
+                self.rel_cls = nn.Sequential(
+                    DCNLayer(256, head_conv, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(head_conv, self.num_rel, kernel_size=1, bias=True),
+                )
+                self.rel_cls[-1].bias.data.fill_(-2.19)
+            
             # regression layers
             self.regs = nn.Sequential(
                 DCNLayer(256, head_conv, kernel_size=3, padding=1),
@@ -196,13 +213,22 @@ class KAF_SwinT(nn.Module):
         p2_2, p3_2, p4_2, p5_2 = self.fpn_2(feats)
 
         # ---- Heads ----
-        out = [
+        head_outputs = [
             [self.hmap(p5_1), self.hmap(p4_1), self.hmap(p3_1), self.hmap(p2_1)],
             [self.regs(p5_1), self.regs(p4_1), self.regs(p3_1), self.regs(p2_1)],
             [self.w_h_(p5_1), self.w_h_(p4_1), self.w_h_(p3_1), self.w_h_(p2_1)],
-            [self.raf(p5_2), self.raf(p4_2), self.raf(p3_2), self.raf(p2_2)],
         ]
-        return out
+
+        # Conditionally construct the 4th head
+        if self.use_kaf:
+            # Original KAF Vector Field
+            raf_out = [self.raf(p5_2), self.raf(p4_2), self.raf(p3_2), self.raf(p2_2)]
+            head_outputs.append(raf_out)
+        else:
+            # Baseline Classification Head
+            cls_out = [self.rel_cls(p5_2), self.rel_cls(p4_2), self.rel_cls(p3_2), self.rel_cls(p2_2)]
+            head_outputs.append(cls_out)
+        return head_outputs
 
     def init_weights(self):
         print("=> init deconv weights from normal distribution")
@@ -216,8 +242,8 @@ class KAF_SwinT(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
 
-def get_kaf_swint(head_conv=64, num_classes=13, num_rel=14):
-    model = KAF_SwinT(head_conv, num_classes, num_rel)
+def get_kaf_swint(head_conv=64, num_classes=13, num_rel=14, use_kaf=True):
+    model = KAF_SwinT(head_conv, num_classes, num_rel, use_kaf=use_kaf)
     model.init_weights()
     return model
 
