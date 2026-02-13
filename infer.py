@@ -66,6 +66,18 @@ def parse_args():
         default="visualization_output",
         help="Directory to save visualization outputs.",
     )
+    parser.add_argument(
+        "--use_kaf",
+        action="store_true",
+        default=True,
+        help="Use KAF vector fields (default).",
+    )
+    parser.add_argument(
+        "--no_kaf",
+        dest="use_kaf",
+        action="store_false",
+        help="Use classification baseline instead of KAF.",
+    )
     args = parser.parse_args()
     return args
 
@@ -93,6 +105,7 @@ def main():
     elif "swin" in args.arch:
         model = get_kaf_swint(
             head_conv=64,
+            use_kaf=args.use_kaf,
         )
         down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
     elif args.arch == "small_hg":
@@ -161,6 +174,7 @@ def main():
             topk_relations,
             inp_image=inp_image,
             debug=True,
+            use_kaf=args.use_kaf,
         )
 
     # print(f"Inference complete. Results saved to {args.output_json_path}")

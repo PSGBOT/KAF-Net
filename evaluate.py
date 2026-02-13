@@ -57,6 +57,18 @@ def parse_args():
         default=0.5,
         help="NMS threshold for post-processing",
     )
+    parser.add_argument(
+        "--use_kaf",
+        action="store_true",
+        default=True,
+        help="Use KAF vector fields (default).",
+    )
+    parser.add_argument(
+        "--no_kaf",
+        dest="use_kaf",
+        action="store_false",
+        help="Use classification baseline instead of KAF.",
+    )
 
     return parser.parse_args()
 
@@ -72,7 +84,7 @@ def to_device(batch, device):
         return batch
 
 
-def decode_sg(outputs, bbox, conf_thresh=0.1, topk=100):
+def decode_sg(outputs, bbox, conf_thresh=0.1, topk=100, use_kaf=True):
     """
     Decode model outputs into detection format
     Returns: list of detections with format [x, y, w, h, score, class_id]
@@ -88,6 +100,7 @@ def decode_sg(outputs, bbox, conf_thresh=0.1, topk=100):
         topk_relations,
         conf_thresh,
         inp_image=None,
+        use_kaf=use_kaf,
     )
     all_obj_detections = []
     all_rel_detections = []
@@ -199,7 +212,7 @@ def evaluate_model(model, test_loader, device, down_ratio, args, logger):
             all_rel_gt.extend(bi_rel_gt)
 
             # Decode predictions
-            obj_pred, rel_pred = decode_sg(outputs, obj_bbox_for_infer)
+            obj_pred, rel_pred = decode_sg(outputs, obj_bbox_for_infer, use_kaf=args.use_kaf)
             all_obj_pred.extend(obj_pred)
 
             bi_rel_pred = [{}] * len(rel_pred) * 2
@@ -283,6 +296,7 @@ def main():
         down_ratio=down_ratio,
         img_size=args.img_size,
         prune=False,
+        use_kaf=args.use_kaf,
     )
 
     test_loader = DataLoader(
@@ -307,6 +321,7 @@ def main():
             head_conv=64,
             num_classes=test_dataset.num_func_cat,
             num_rel=test_dataset.num_kr_cat,
+            use_kaf=args.use_kaf,
         )
     elif "hrnet" in args.arch:
         model = get_kaf_hrnet(
