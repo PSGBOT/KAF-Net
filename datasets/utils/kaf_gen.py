@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from fvcore.common.file_io import PathManager
 from PIL import Image
+import math
 
 
 @torch.no_grad()
@@ -295,3 +296,178 @@ def get_kaf(
 
     # [14, 2, 128, 128], [14, 2, 128, 128]
     return rafs, rafs_weights
+
+
+# =============================================================================
+# CLASSIFICATION BASELINE: Gaussian heatmap at relation midpoints
+# =============================================================================
+
+def _gaussian_radius(det_size, min_overlap=0.7):
+    """Compute Gaussian radius given (height, width) of a detection box."""
+    height, width = det_size
+    a1 = 1
+    b1 = (height + width)
+    c1 = width * height * (1 - min_overlap) / (1 + min_overlap)
+    sq1 = np.sqrt(b1 ** 2 - 4 * a1 * c1)
+    r1 = (b1 + sq1) / 2
+
+    a2 = 4
+    b2 = 2 * (height + width)
+    c2 = (1 - min_overlap) * width * height
+    sq2 = np.sqrt(b2 ** 2 - 4 * a2 * c2)
+    r2 = (b2 + sq2) / 2
+
+    a3 = 4 * min_overlap
+    b3 = -2 * min_overlap * (height + width)
+    c3 = (min_overlap - 1) * width * height
+    sq3 = np.sqrt(b3 ** 2 - 4 * a3 * c3)
+    r3 = (b3 + sq3) / 2
+    return min(r1, r2, r3)
+
+
+def _draw_umich_gaussian(heatmap, center_int, radius, k=1):
+    """
+    Draw a 2D Gaussian on a numpy heatmap at center_int with given radius.
+    Same logic as utils.image.draw_umich_gaussian.
+    """
+    diameter = 2 * radius + 1
+    sigma = diameter / 6.0
+    # generate gaussian kernel
+    x_range = np.arange(0, diameter, 1, np.float32)
+    y_range = x_range[:, np.newaxis]
+    x0 = y0 = diameter // 2
+    gaussian = np.exp(-((x_range - x0) ** 2 + (y_range - y0) ** 2) / (2 * sigma ** 2))
+
+    height, width = heatmap.shape
+    x, y = int(center_int[0]), int(center_int[1])
+
+    left, right = min(x, radius), min(width - x, radius + 1)
+    top, bottom = min(y, radius), min(height - y, radius + 1)
+
+    masked_heatmap = heatmap[y - top:y + bottom, x - left:x + right]
+    masked_gaussian = gaussian[radius - top:radius + bottom, radius - left:radius + right]
+
+    if min(masked_gaussian.shape) > 0 and min(masked_heatmap.shape) > 0:
+        np.maximum(masked_heatmap, masked_gaussian * k, out=masked_heatmap)
+    return heatmap
+
+
+@torch.no_grad()
+def get_rel_cls_gt(
+    gt_relations,
+    gt_boxes,
+    num_predicates,
+    output_stride,
+    output_size,
+    range_wh=None,
+    gaussian_iou=0.7,
+):
+    """
+    Classification baseline ground truth: Gaussian heatmaps at relation midpoints.
+
+    For each relation (part_i, part_j, predicate_type), we compute the midpoint
+    between part_i and part_j centers, then draw a Gaussian peak at that midpoint
+    on the heatmap channel corresponding to predicate_type.
+
+    Uses the SAME FPN-level assignment logic as get_kaf():
+    the distance between two part centers determines which FPN level this
+    relation is assigned to, controlled by range_wh.
+
+    Args:
+        gt_relations: list of [subject_idx, object_idx, relation_idx]
+        gt_boxes: dict {mask_idx: {"center": (x,y), "scale": [w,h]}}
+        num_predicates: number of relation types (14)
+        output_stride: downsampling stride for this FPN level
+        output_size: (H, W) of the feature map
+        range_wh: [min_dist, max_dist] for FPN-level filtering (same as KAF)
+        gaussian_iou: IoU threshold for Gaussian radius computation
+
+    Returns:
+        rel_hmap: numpy array (P, H, W) — Gaussian heatmap per predicate
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    h, w = output_size
+    # Output is a numpy array (P, H, W), matching what psr.py expects for hmap
+    rel_hmap = np.zeros((num_predicates, h, w), dtype=np.float32)
+
+    if len(gt_relations) == 0:
+        return rel_hmap
+
+    gt_relations_t = torch.tensor(gt_relations, device=device)
+
+    # Extract centers and sizes
+    gt_centers = np.zeros((len(gt_boxes), 2))
+    gt_wh_np = np.zeros((len(gt_boxes), 2))
+    for mask_idx in gt_boxes.keys():
+        gt_centers[mask_idx] = gt_boxes[mask_idx]["center"]
+        gt_wh_np[mask_idx] = gt_boxes[mask_idx]["scale"]
+
+    gt_centers_t = torch.tensor(gt_centers, device=device)
+    gt_wh_t = torch.tensor(gt_wh_np, device=device)
+
+    # Compute midpoints and distances (same as KAF)
+    leaf_centers = gt_centers_t[gt_relations_t[:, 0]]
+    root_centers = gt_centers_t[gt_relations_t[:, 1]]
+    mid_centers = (leaf_centers + root_centers) / 2.0
+
+    # Distance for FPN assignment (same as KAF: uses true_m2o_vectors_norms)
+    true_m2o_vectors = mid_centers - leaf_centers
+    true_m2o_vectors[true_m2o_vectors.eq(0).all(dim=1)] += 1e-6
+    true_m2o_vectors_norms = torch.norm(true_m2o_vectors, dim=1, keepdim=False)
+
+    # FPN-level filtering (exact same logic as KAF)
+    if range_wh is not None:
+        valid_rel_mask = torch.logical_and(
+            true_m2o_vectors_norms > range_wh[0],
+            true_m2o_vectors_norms <= range_wh[1],
+        )
+        gt_relations_t = gt_relations_t[valid_rel_mask]
+        mid_centers = mid_centers[valid_rel_mask]
+        leaf_centers = leaf_centers[valid_rel_mask]
+        root_centers = root_centers[valid_rel_mask]
+
+    num_rels = gt_relations_t.size(0)
+    if num_rels == 0:
+        return rel_hmap
+
+    # For each relation, draw a Gaussian at the midpoint
+    for i in range(num_rels):
+        predicate = int(gt_relations_t[i, 2].item())
+        sub_idx = int(gt_relations_t[i, 0].item())
+        obj_idx = int(gt_relations_t[i, 1].item())
+
+        # Midpoint in feature map coordinates
+        mid_x = float(mid_centers[i, 0].item()) / output_stride
+        mid_y = float(mid_centers[i, 1].item()) / output_stride
+        mid_int = np.array([int(mid_x), int(mid_y)], dtype=np.int32)
+
+        # Clamp to valid range
+        mid_int[0] = np.clip(mid_int[0], 0, w - 1)
+        mid_int[1] = np.clip(mid_int[1], 0, h - 1)
+
+        # Compute Gaussian radius based on the smaller of the two part bboxes
+        # (same philosophy as KAF's sigma computation)
+        sub_w, sub_h = gt_wh_np[sub_idx]
+        obj_w, obj_h = gt_wh_np[obj_idx]
+        # Use the smaller bbox area to determine radius
+        sub_area = (sub_w / output_stride) * (sub_h / output_stride)
+        obj_area = (obj_w / output_stride) * (obj_h / output_stride)
+        if min(sub_area, obj_area) < 1:
+            radius = 0
+        else:
+            # Use the smaller part's dimensions for Gaussian radius
+            if sub_area < obj_area:
+                det_h = math.ceil(sub_h / output_stride)
+                det_w = math.ceil(sub_w / output_stride)
+            else:
+                det_h = math.ceil(obj_h / output_stride)
+                det_w = math.ceil(obj_w / output_stride)
+            radius = max(
+                0,
+                int(_gaussian_radius((det_h, det_w), gaussian_iou))
+            )
+
+        _draw_umich_gaussian(rel_hmap[predicate], mid_int, radius)
+
+    return rel_hmap
