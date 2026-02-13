@@ -213,3 +213,62 @@ def _kaf_loss(rafs, gt_rafs, gt_raf_weights, samples_per_cls=None):
 
     raf_loss = raf_loss_evaluator(rafs, gt)
     return raf_loss
+
+def CB_loss_weights(samples_per_cls, beta):
+    """Compute the Class Balanced Loss between `logits` and the ground truth `labels`.
+
+    Class Balanced Loss: ((1-beta)/(1-beta^n))*Loss(labels, logits)
+    where Loss is one of the standard losses used for Neural Networks.
+
+    Args:
+      labels: A int tensor of size [batch].
+      logits: A float tensor of size [batch, no_of_classes].
+      samples_per_cls: A python list of size [no_of_classes].
+      no_of_classes: total number of classes. int
+      loss_type: string. One of "sigmoid", "focal", "softmax".
+      beta: float. Hyperparameter for Class balanced loss.
+      gamma: float. Hyperparameter for Focal loss.
+
+    Returns:
+      cb_loss: A float tensor representing class balanced loss
+    """
+    effective_num = 1.0 - np.power(beta, samples_per_cls)
+    no_of_classes = len(samples_per_cls)
+    weights = (1.0 - beta) / np.array(effective_num)
+    weights = weights / np.sum(weights) * no_of_classes
+
+    return weights
+
+def _rel_cls_loss(preds, gt_hmaps, gt_weights_unused=None, samples_per_cls=None):
+    """
+    Classification baseline loss: focal loss on relation midpoint heatmaps.
+
+    Uses the same gaussian_focal_loss as the center heatmap head, since the
+    GT is a Gaussian heatmap with peaks at relation midpoints.
+
+    Args:
+        preds: (B, P, H, W) — raw logits from rel_cls head
+        gt_hmaps: (B, P, H, W) — Gaussian heatmap GT from get_rel_cls_gt()
+        gt_weights_unused: ignored (kept for API compatibility with _kaf_loss)
+        samples_per_cls: optional array for class-balanced weighting
+
+    Returns:
+        loss: scalar tensor
+    """
+    # Apply sigmoid to convert logits to probabilities
+    preds = torch.clamp(preds.sigmoid(), min=1e-4, max=1 - 1e-4)
+
+    # Compute per-class focal loss
+    if samples_per_cls is not None:
+        # Class-balanced: compute loss per predicate channel, weight each
+        cb_weights = CB_loss_weights(samples_per_cls, beta=0.999)
+        cb_weights = torch.FloatTensor(cb_weights).to(preds.device)
+
+        B, P, H, W = preds.shape
+        total_loss = 0
+        for p in range(P):
+            cls_loss = gaussian_focal_loss(preds[:, p:p+1], gt_hmaps[:, p:p+1])
+            total_loss = total_loss + cls_loss * cb_weights[p]
+        return total_loss / P
+    else:
+        return gaussian_focal_loss(preds, gt_hmaps)
