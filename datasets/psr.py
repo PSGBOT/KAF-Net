@@ -8,7 +8,7 @@ import cv2
 import math
 from utils.image import get_affine_transform, color_aug
 from utils.image import draw_umich_gaussian, gaussian_radius
-from datasets.utils.kaf_gen import get_kaf
+from datasets.utils.kaf_gen import get_kaf, get_rel_cls_gt
 from datasets.utils.augimg import generate_mask_colors
 
 PSR_FUNC_CAT = [
@@ -71,6 +71,7 @@ class PSRDataset(Dataset):
         img_size=512,
         prune=True,
         eval=False,
+        use_kaf=True,
     ):
         print("==> Initializing PSR Dataset")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -78,7 +79,8 @@ class PSRDataset(Dataset):
         self.samples = []
         self.prune = prune
         self.eval = eval
-
+        self.use_kaf = use_kaf
+        
         self.func_cat = PSR_FUNC_CAT
         self.func_cat_ids = PSR_FUNC_CAT_IDX
         self.kr_cat = PSR_KR_CAT
@@ -499,8 +501,31 @@ class PSRDataset(Dataset):
                     obj_idx += 1
 
             # generate kaf with gt relations and bbox
-            with torch.no_grad():
-                raf_field, raf_weights = get_kaf(
+            # with torch.no_grad():
+            #     raf_field, raf_weights = get_kaf(
+            #         kr,
+            #         masks_bbox,
+            #         self.num_kr_cat,
+            #         stride,
+            #         (fmap_size, fmap_size),
+            #         range_wh=self.fpn_range[stride_key],
+            #     )
+            if self.use_kaf:
+                # KAF: vector fields along relation paths -> (P, 2, H, W)
+                with torch.no_grad():
+                    raf_field, raf_weights = get_kaf(
+                        kr,
+                        masks_bbox,
+                        self.num_kr_cat,
+                        stride,
+                        (fmap_size, fmap_size),
+                        range_wh=self.fpn_range[stride_key],
+                    )
+                kaf_ms.append(raf_field.cpu())
+                kaf_weight_ms.append(raf_weights.cpu())
+            else:
+                # Classification baseline: Gaussian heatmap at midpoints -> (P, H, W)
+                rel_hmap = get_rel_cls_gt(
                     kr,
                     masks_bbox,
                     self.num_kr_cat,
@@ -508,14 +533,18 @@ class PSRDataset(Dataset):
                     (fmap_size, fmap_size),
                     range_wh=self.fpn_range[stride_key],
                 )
+                kaf_ms.append(torch.from_numpy(rel_hmap))
+                # No separate weights needed; focal loss handles pos/neg weighting
+                kaf_weight_ms.append(torch.zeros(1))
+                
             hmap_ms.append(hmap)
             reg_ms.append(reg)
             reg_inds_ms.append(reg_inds)
             w_h_ms.append(w_h_)
             wh_inds_ms.append(wh_inds)
             ind_masks_ms.append(ind_masks)
-            kaf_ms.append(raf_field.cpu())
-            kaf_weight_ms.append(raf_weights.cpu())
+            # kaf_ms.append(raf_field.cpu())
+            # kaf_weight_ms.append(raf_weights.cpu())
 
         gt_centers = np.zeros((len(masks_bbox), 2))
         gt_wh = np.zeros((len(masks_bbox), 2))
@@ -651,6 +680,7 @@ class PSRDataset_eval(PSRDataset):
         img_size=512,
         prune=True,
         eval=True,
+        use_kaf=True,
     ):
         super().__init__(
             root_dir,
@@ -660,5 +690,6 @@ class PSRDataset_eval(PSRDataset):
             img_size=img_size,
             prune=prune,
             eval=eval,
+            use_kaf=use_kaf,
         )
         print("==> Initializing PSR Dataset for evaluation")
