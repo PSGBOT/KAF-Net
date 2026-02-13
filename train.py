@@ -13,7 +13,7 @@ import numpy as np
 # from datasets.coco import COCO, COCO_eval
 # from datasets.pascal import PascalVOC, PascalVOC_eval
 from datasets.psr import PSRDataset, PSRDataset_eval
-from nets.raf_loss import _kaf_loss
+from nets.raf_loss import _kaf_loss, _rel_cls_loss
 
 from nets.kaf.kaf_resdcn import get_kaf_resdcn
 from nets.kaf.kaf_swint import get_kaf_swint
@@ -69,6 +69,18 @@ parser.add_argument("--log_interval", type=int, default=100)
 parser.add_argument("--val_interval", type=int, default=5)
 parser.add_argument("--num_workers", type=int, default=2)
 parser.add_argument("--prune", type=bool, default=False)
+parser.add_argument(
+    "--use_kaf",
+    action="store_true",
+    default=True,
+    help="Use KAF vector fields (default). Use --no_kaf for classification baseline.",
+)
+parser.add_argument(
+    "--no_kaf",
+    dest="use_kaf",
+    action="store_false",
+    help="Use classification baseline instead of KAF vector fields.",
+)
 
 cfg = parser.parse_args()
 
@@ -227,6 +239,7 @@ def main():
         down_ratio=down_ratio,
         img_size=cfg.img_size,
         prune=cfg.prune,
+        use_kaf=cfg.use_kaf,
     )
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=num_gpus, rank=cfg.local_rank
@@ -249,6 +262,7 @@ def main():
         img_size=cfg.img_size,
         prune=cfg.prune,
         eval=False,
+        use_kaf=cfg.use_kaf,
     )
 
     val_loader = torch.utils.data.DataLoader(
@@ -282,6 +296,7 @@ def main():
             head_conv=64,
             num_classes=train_dataset.num_func_cat,
             num_rel=train_dataset.num_kr_cat,
+            use_kaf=cfg.use_kaf,
         )
     elif "hrnet" in cfg.arch:
         model = get_kaf_hrnet(
@@ -368,12 +383,19 @@ def main():
                 w_h_loss = _reg_loss(
                     w_h_, batch["w_h_"][fpn_idx], batch["ind_masks"][fpn_idx]
                 )
-                kaf_loss = _kaf_loss(
-                    raf,
-                    batch["gt_relations"][fpn_idx],
-                    batch["gt_relations_weights"][fpn_idx],
-                    samples_per_cls=samples_per_kaf,
-                )
+                if cfg.use_kaf:
+                    kaf_loss = _kaf_loss(
+                        raf,
+                        batch["gt_relations"][fpn_idx],
+                        batch["gt_relations_weights"][fpn_idx],
+                        samples_per_cls=samples_per_kaf,
+                    )
+                else:
+                    kaf_loss = _rel_cls_loss(
+                        raf,
+                        batch["gt_relations"][fpn_idx],
+                        samples_per_cls=samples_per_kaf,
+                    )
                 total_hmap_loss += hmap_loss
                 total_reg_loss += reg_loss
                 total_wh_loss += w_h_loss
@@ -470,11 +492,17 @@ def main():
                 w_h_loss = _reg_loss(
                     w_h_, batch["w_h_"][fpn_idx], batch["ind_masks"][fpn_idx]
                 )
-                kaf_loss = _kaf_loss(
-                    raf,
-                    batch["gt_relations"][fpn_idx],
-                    batch["gt_relations_weights"][fpn_idx],
-                )
+                if cfg.use_kaf:
+                    kaf_loss = _kaf_loss(
+                        raf,
+                        batch["gt_relations"][fpn_idx],
+                        batch["gt_relations_weights"][fpn_idx],
+                    )
+                else:
+                    kaf_loss = _rel_cls_loss(
+                        raf,
+                        batch["gt_relations"][fpn_idx],
+                    )
                 total_hmap_loss += hmap_loss
                 total_reg_loss += reg_loss
                 total_wh_loss += w_h_loss
@@ -514,6 +542,7 @@ def main():
         return
 
     print(f"Use prune dataset: {cfg.prune}")
+    print(f"Use KAF vector fields: {cfg.use_kaf}")
     print(f"Starting training at epoch {start_epoch}...")
     for epoch in range(start_epoch, cfg.num_epochs + 1):
         train_sampler.set_epoch(epoch)
