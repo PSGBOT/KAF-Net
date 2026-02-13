@@ -253,6 +253,103 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
     return relations
 
 
+def extract_relations_cls(cls_img, objects, rel_thresh=0.2, debug=False):
+    """
+    Classification baseline inference: read heatmap scores at relation midpoints.
+
+    Instead of path integrals over vector fields, we simply read the predicted
+    score at the midpoint pixel between each pair of parts.
+
+    Args:
+        cls_img: list of tensors, each of shape [num_relations, H, W]
+        objects: list of detected objects
+        rel_thresh: confidence threshold
+
+    Returns:
+        relations: list of detected relations
+    """
+    if len(objects) == 0:
+        return []
+
+    fpn_range = {
+        0: [128, 512],  # stride 32
+        1: [64, 128],   # stride 16
+        2: [32, 64],    # stride 8
+        3: [0, 32],     # stride 4
+    }
+
+    device = cls_img[0].device
+    num_rel = cls_img[0].shape[0]  # P channels (not P*2)
+    relations = []
+
+    scores = torch.tensor([obj["score"] for obj in objects], device=device)
+
+    for i, subj in enumerate(objects):
+        for j, obj in enumerate(objects):
+            if i <= j:
+                continue
+
+            # Compute midpoint and distance
+            y0, x0 = subj["yx"]
+            y1, x1 = obj["yx"]
+            mid_y = (y0 + y1) / 2
+            mid_x = (x0 + x1) / 2
+            rel_length = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
+
+            # Determine FPN level (same logic as KAF)
+            fpn_level = -1
+            if rel_length < 1e-6:
+                continue
+            for fpn_idx in range(len(fpn_range)):
+                if fpn_range[fpn_idx][0] < rel_length <= fpn_range[fpn_idx][1]:
+                    fpn_level = fpn_idx
+                    if debug:
+                        print(f"length {rel_length}, use {fpn_level} level for relation")
+            if fpn_level == -1:
+                continue
+
+            stride = int(32 / pow(2, fpn_level))
+            H, W = cls_img[fpn_level].shape[1], cls_img[fpn_level].shape[2]
+
+            # Midpoint in feature map coordinates
+            mid_feat_y = int(mid_y / stride)
+            mid_feat_x = int(mid_x / stride)
+            mid_feat_y = max(0, min(mid_feat_y, H - 1))
+            mid_feat_x = max(0, min(mid_feat_x, W - 1))
+
+            # Read scores at midpoint for all relation types
+            for rel_type in range(num_rel):
+                confidence = torch.sigmoid(cls_img[fpn_level][rel_type, mid_feat_y, mid_feat_x])
+
+                if confidence > rel_thresh:
+                    relations.append(
+                        {
+                            "subject_id": i,
+                            "subject_bbox": subj["bbox"],
+                            "object_id": j,
+                            "object_bbox": obj["bbox"],
+                            "relation": rel_type,
+                            "confidence": confidence,
+                            "subject_category": subj["category"],
+                            "object_category": obj["category"],
+                        }
+                    )
+                    # Also add reverse direction
+                    relations.append(
+                        {
+                            "subject_id": j,
+                            "subject_bbox": obj["bbox"],
+                            "object_id": i,
+                            "object_bbox": subj["bbox"],
+                            "relation": rel_type,
+                            "confidence": confidence,
+                            "subject_category": obj["category"],
+                            "object_category": subj["category"],
+                        }
+                    )
+
+    return relations
+
 def visualize_detections(dets, image):
     """
     Visualize object detections on an image.
@@ -359,7 +456,7 @@ def get_dets_using_mask_bbox(hmaps, regs, w_h_s, gt_bbox, thresh=0.1):
 
 
 def get_scene_graph(
-    hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.1, inp_image=None, debug=False
+    hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.1, inp_image=None, debug=False, use_kaf=True
 ):
     # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
     fpn_num = len(hmaps)
@@ -417,7 +514,11 @@ def get_scene_graph(
     relations = []
     if objects and len(kafs) > 0:
         kaf = [k[0] for k in kafs]
-        relations = extract_relations(kaf, objects, rel_thresh=0.2, debug=debug)
+        if use_kaf:
+            relations = extract_relations(kaf, objects, rel_thresh=0.2, debug=debug)
+        else:
+            relations = extract_relations_cls(kaf, objects, rel_thresh=0.2, debug=debug)
+
 
     scene_graph = {"objects": objects, "relations": relations}
     if debug:
