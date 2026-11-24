@@ -10,6 +10,7 @@ from utils.image import get_affine_transform, color_aug
 from utils.image import draw_umich_gaussian, gaussian_radius
 from datasets.utils.kaf_gen import get_kaf
 from datasets.utils.augimg import generate_mask_colors
+from datasets.psr_pairs import annotation_functions, annotation_labels
 
 from datasets.psr_labels import (
     PSR_EIGEN_VALUES,
@@ -38,6 +39,8 @@ class PSRDataset(Dataset):
         img_size=512,
         prune=True,
         eval=False,
+        labels_only=False,
+        sample_paths=None,
     ):
         print("==> Initializing PSR Dataset")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -45,6 +48,7 @@ class PSRDataset(Dataset):
         self.samples = []
         self.prune = prune
         self.eval = eval
+        self.labels_only = labels_only
 
         self.func_cat = PSR_FUNC_CAT
         self.func_cat_ids = PSR_FUNC_CAT_IDX
@@ -70,10 +74,13 @@ class PSRDataset(Dataset):
         self.img_size = {"h": img_size, "w": img_size}
         self.gaussian_iou = 0.7
         self.rand_scales = np.arange(1, 1.4, 0.1)
-        for sample_name in os.listdir(root_dir):
-            sample_path = os.path.join(root_dir, sample_name)
-            if os.path.isdir(sample_path):
-                self.samples.append(sample_path)
+        if sample_paths is None:
+            for sample_name in os.listdir(root_dir):
+                sample_path = os.path.join(root_dir, sample_name)
+                if os.path.isdir(sample_path):
+                    self.samples.append(sample_path)
+        else:
+            self.samples = [os.path.join(root_dir, path) for path in sample_paths]
         if len(self.down_ratio) == 4:
             self.fpn_range = {
                 "p5": [128, 512],
@@ -132,7 +139,7 @@ class PSRDataset(Dataset):
         # Count total masks first to generate appropriate colors
         mask_files = [f for f in os.listdir(masks_dir) if f.startswith("mask")]
         num_masks = len(mask_files)
-        mask_colors = generate_mask_colors(num_masks, self.max_objs)
+        mask_colors = generate_mask_colors(num_masks, num_masks)
 
         if os.path.exists(masks_dir):
             # Store individual masks for overlap resolution
@@ -218,9 +225,8 @@ class PSRDataset(Dataset):
                     }
 
             # Third pass: create colored mask channels using resolved masks
-            for mask_idx in resolved_masks:
-                # Get the color for this mask (ensure mask_index + 1 for proper color mapping)
-                color = mask_colors[min(mask_idx + 1, len(mask_colors) - 1)]
+            for index, mask_idx in enumerate(resolved_masks, start=1):
+                color = mask_colors[index]
 
                 # Create colored mask
                 mask_normalized = resolved_masks[mask_idx].astype(np.float32)
@@ -305,6 +311,17 @@ class PSRDataset(Dataset):
             flipped,
             trans_img,
         )
+
+        if self.labels_only:
+            functions = annotation_functions(config)
+            return {
+                "masked_img": masked_img, "mask_boxes": masks_bbox,
+                "masks_cat": {
+                    mask: dict.fromkeys(functions[mask], 1)
+                    for mask in masks_bbox.keys() | functions.keys()
+                },
+                "relations": annotation_labels(config),
+            }
 
         masks_cat = {}
         kr = []

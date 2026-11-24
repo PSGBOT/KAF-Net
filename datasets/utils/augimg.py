@@ -131,7 +131,7 @@ def process_image_and_masks_mcm(sample_path, img_size={"w": 512, "h": 512}):
     # Count total masks first to generate appropriate colors
     mask_files = [f for f in os.listdir(masks_dir) if f.startswith("mask")]
     num_masks = len(mask_files)
-    mask_colors = generate_mask_colors(num_masks, 128)
+    mask_colors = generate_mask_colors(num_masks, num_masks)
 
     if os.path.exists(masks_dir):
         # Store individual masks for overlap resolution
@@ -210,9 +210,8 @@ def process_image_and_masks_mcm(sample_path, img_size={"w": 512, "h": 512}):
                 }
 
         # Third pass: create colored mask channels using resolved masks
-        for mask_idx in resolved_masks:
-            # Get the color for this mask (ensure mask_index + 1 for proper color mapping)
-            color = mask_colors[min(mask_idx + 1, len(mask_colors) - 1)]
+        for index, mask_idx in enumerate(resolved_masks, start=1):
+            color = mask_colors[index]
 
             # Create colored mask
             mask_normalized = resolved_masks[mask_idx].astype(np.float32)

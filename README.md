@@ -5,7 +5,9 @@ This repository is a simple pytorch implementation of KAF-Net, some of the code 
 ## Requirements:
 - python>=3.10
 - pytorch==1.13.1
-- tensorboardX(optional)
+- tensorboardX or tensorboard for PSR training and evaluation
+
+See [PSR model routing and evaluation](experiments/DSFLASH.md#model-routing-and-evaluation) for selecting KAF-Swin or DSFlash and viewing checkpoint metrics.
 
 ## Getting Started
 1. Disable cudnn batch normalization.

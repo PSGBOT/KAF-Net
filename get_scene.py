@@ -1,17 +1,12 @@
 import torch
-import torch.nn.functional as F
 import numpy as np
-from scipy.ndimage import maximum_filter
 
 from utils.post_process import ctdet_decode
-import math
-from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
-import cv2
-import matplotlib.pyplot as plt
+from datasets.psr_labels import PSR_FUNC_CAT, PSR_KR_CAT
 
 
 @torch.no_grad()
-def get_kaf_path(objects, sigma_factor=2.0, stride=4):
+def get_kaf_path(objects, sigma_factor=2.0, stride=4, *, shape=None, device=None):
     """
     Generate inference weights for KAF relation extraction.
 
@@ -26,9 +21,8 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
     if len(objects) == 0:
         return torch.empty(0, 0, 0, 0)
 
-    # Get device from first object's position (assuming they're tensors)
-    # If objects store positions as lists, we'll use CPU and move to GPU later
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Extract object centers
     centers = torch.tensor(
@@ -37,12 +31,7 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
         dtype=torch.float32,
     )  # [N, 2] (y, x)
 
-    # Get typical feature map size from the calling context
-    # We'll assume a reasonable default size and let it be overridden if needed
-    H, W = (
-        int(512 / stride),
-        int(512 / stride),
-    )  # Default size, should match the KAF feature map
+    H, W = shape if shape is not None else (512 // stride, 512 // stride)
 
     num_objects = len(objects)
 
@@ -131,6 +120,14 @@ def get_kaf_path(objects, sigma_factor=2.0, stride=4):
     return relation_weights
 
 
+def _fpn_levels(count):
+    if count == 1:
+        return ((4, 0, float("inf")),)
+    if count == 4:
+        return ((32, 128, 512), (16, 64, 128), (8, 32, 64), (4, 0, 32))
+    raise ValueError(f"Expected one or four KAF feature levels, got {count}.")
+
+
 def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
     """
     Fast relation extraction using pre-computed weights and vectorized operations.
@@ -146,13 +143,7 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
     """
     if len(objects) == 0:
         return []
-    fpn_range = {
-        0: [128, 512],  # stride 32
-        1: [64, 128],  # stride 16
-        2: [32, 64],  # stride 8
-        3: [0, 32],  # stride 4
-        #   ^not conluded
-    }
+    levels = _fpn_levels(len(kaf_img))
 
     device = kaf_img[0].device
     num_rel = kaf_img[0].shape[0] // 2
@@ -160,13 +151,10 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
 
     # Pre-compute integration weights for all object pairs
     weights = []
-    for fpn_level in range(len(fpn_range)):
+    for field, (stride, _, _) in zip(kaf_img, levels):
         weights.append(
-            get_kaf_path(objects, sigma_factor=0.5, stride=int(32 / pow(2, fpn_level)))
+            get_kaf_path(objects, sigma_factor=0.5, stride=stride, shape=field.shape[-2:], device=device)
         )
-
-    # Extract object scores for vectorized computation
-    scores = torch.tensor([obj["score"] for obj in objects], device=device)
 
     # Vectorized computation for all relations
     for rel_type in range(num_rel):
@@ -193,8 +181,8 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
                 if rel_length < 1e-6:
                     continue
                 else:
-                    for fpn_idx in range(len(fpn_range)):
-                        if fpn_range[fpn_idx][0] < rel_length <= fpn_range[fpn_idx][1]:
+                    for fpn_idx, (_, lower, upper) in enumerate(levels):
+                        if lower < rel_length <= upper:
                             fpn_level = fpn_idx
                             if debug:
                                 print(
@@ -224,18 +212,11 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
                 # print(confidence_m20, confidence_m21)
                 confidences[i, j] = confidence_m20 + confidence_m21
 
-        # Apply score weighting and threshold
-        score_matrix = scores[:, None] * scores[None, :]  # [num_obj, num_obj]
-        final_confidences = confidences  # * score_matrix
-        # print(final_confidences)
-
         # Find relations above threshold
-        valid_rels = final_confidences > rel_thresh
+        valid_rels = confidences > rel_thresh
         subj_ids, obj_ids = torch.where(valid_rels)
-        # print(valid_rels)
-        # print(subj_ids, obj_ids)
-
-        for subj_id, obj_id in zip(subj_ids.cpu(), obj_ids.cpu()):
+        scores = confidences[subj_ids, obj_ids].sigmoid().tolist()
+        for subj_id, obj_id, score in zip(subj_ids.tolist(), obj_ids.tolist(), scores):
             if subj_id != obj_id:
                 relations.append(
                     {
@@ -244,7 +225,7 @@ def extract_relations(kaf_img, objects, rel_thresh=0.2, debug=False):
                         "object_id": obj_id,
                         "object_bbox": objects[obj_id]["bbox"],
                         "relation": rel_type,
-                        "confidence": torch.sigmoid(final_confidences[subj_id, obj_id]),
+                        "confidence": score,
                         "subject_category": objects[subj_id]["category"],
                         "object_category": objects[obj_id]["category"],
                     }
@@ -264,6 +245,9 @@ def visualize_detections(dets, image):
     Returns:
         annotated_image: numpy array of annotated image with detections
     """
+    import cv2
+    import matplotlib.pyplot as plt
+
     annotated_image = image.copy()
     for det in dets:
         x1, y1, x2, y2, score_class = det
@@ -287,90 +271,48 @@ def visualize_detections(dets, image):
     return annotated_image
 
 
-def get_dets_using_mask_bbox(hmaps, regs, w_h_s, gt_bbox, thresh=0.1):
-    """
-    Refine object detections using mask-derived bounding boxes.
-
-    Args:
-        dets: numpy array of detections with shape [N, 6] where each row is [x1, y1, x2, y2, score, class_id]
-        gt_bbox: dict mapping object_id to {'center': (x, y), 'scale': [width, height]}
-
-    Returns:
-        refined_dets: numpy array of refined detections
-    """
-    fpn_range = {
-        0: [128, 512],  # stride 32
-        1: [64, 128],  # stride 16
-        2: [32, 64],  # stride 8
-        3: [0, 32],  # stride 4
-        #   ^not conluded
-    }
-    final_dets = [0] * len(gt_bbox)
-    # print(gt_bbox)
-
-    for mask_id, mask_info in gt_bbox.items():
-        mask_center_x, mask_center_y = mask_info["center"]
-        mask_scale_x, mask_scale_y = mask_info["scale"]
-        mask_scale = mask_scale_x * mask_scale_y
-
-        useful_level = 0
-
-        raw_dets = []
-        for fpn_level, range in fpn_range.items():
-            if mask_scale <= range[1] ** 2 and mask_scale > range[0] ** 2:
-                useful_level = fpn_level
-                hmap = hmaps[fpn_level][0].unsqueeze(0)  # [1, 13, H, W]
-                reg = regs[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
-                w_h_ = w_h_s[fpn_level][0].unsqueeze(0)  # [1, 2, H, W]
-                dets = ctdet_decode(hmap, reg, w_h_, int(32 / pow(2, fpn_level)))
-                dets = dets.detach().cpu().numpy().reshape(1, -1, dets.shape[2])[0]
-
-                # Apply score threshold and add to all_detections
-                valid_dets = dets[dets[:, 4] > thresh]  # Filter by score > 0.1
-                if len(valid_dets) > 0:
-                    raw_dets = valid_dets
-
-        best_dist = int(32 / pow(2, useful_level)) * 1.5
-        best_det = [
-            mask_center_x - mask_scale_x / 2,
-            mask_center_y - mask_scale_y / 2,
-            mask_center_x + mask_scale_x / 2,
-            mask_center_y + mask_scale_y / 2,
-            [],
-        ]
-        for det in raw_dets:
-            x1, y1, x2, y2, _, _ = det
-            det_center_x, det_center_y = (x1 + x2) / 2, (y1 + y2) / 2
-            dist = math.sqrt(
-                (det_center_x - mask_center_x) ** 2
-                + (det_center_y - mask_center_y) ** 2
-            )
-            if dist < best_dist:
-                best_dist = dist
-                best_det[4].append([det[4], det[5]])
-
-        if best_det is None:
-            print(f"No matching detection for mask {mask_id}")
-            return []
-        else:
-            final_dets[mask_id] = best_det
-
-    return final_dets
+def get_dets_using_mask_bbox(hmaps, regs, w_h_s, gt_bbox, thresh=0.1, topk=100):
+    """Associate class proposals with supplied masks at their assigned FPN level."""
+    mask_ids = sorted(gt_bbox)
+    if not mask_ids:
+        return []
+    centers = np.array([gt_bbox[mask]["center"] for mask in mask_ids])
+    sizes = np.array([gt_bbox[mask]["scale"] for mask in mask_ids])
+    area = sizes.prod(axis=1)
+    scores_by_mask = [{} for _ in mask_ids]
+    for level, (stride, lower, upper) in enumerate(_fpn_levels(len(hmaps))):
+        eligible = np.flatnonzero((lower ** 2 < area) & (area <= upper ** 2))
+        if not len(eligible):
+            continue
+        hmap = hmaps[level]
+        h, w = hmap.shape[-2:]
+        proposals = ctdet_decode(hmap, regs[level], w_h_s[level], stride, K=min(topk, h * w))
+        proposals = proposals[0].detach().cpu().numpy()
+        proposals = proposals[proposals[:, 4] > thresh]
+        proposal_centers = (proposals[:, :2] + proposals[:, 2:4]) / 2
+        distances = ((proposal_centers[:, None] - centers[eligible]) ** 2).sum(axis=2)
+        closest = distances.argmin(axis=1)
+        for index, (candidate, owner) in enumerate(zip(proposals, closest)):
+            if distances[index, owner] < (stride * 1.5) ** 2:
+                score, category = candidate[4:]
+                scores_by_mask[eligible[owner]].setdefault(int(category), float(score))
+    return [
+        [*(center - size / 2).tolist(), *(center + size / 2).tolist(),
+         [(score, category) for category, score in classes.items()]]
+        for center, size, classes in zip(centers, sizes, scores_by_mask)
+    ]
 
 
 def get_scene_graph(
     hmaps, regs, w_h_s, kafs, bbox, top_K=100, thresh=0.1, inp_image=None, debug=False
 ):
     # [hmap(List[tensor[B,13,H,W]]), reg(List[tensor[B,2,H,W]]), w_h_(List[tensor[B,2,H,W]]), kaf(List[tensor[B,28,H,W]])]
-    fpn_num = len(hmaps)
-
     # Combine detections from all FPN levels
     # Refine detections using mask bounding boxes if available
     if bbox:
-        refined_dets = get_dets_using_mask_bbox(hmaps, regs, w_h_s, bbox, thresh)
+        refined_dets = get_dets_using_mask_bbox(hmaps, regs, w_h_s, bbox, thresh, top_K)
     else:
-        print("fail")
-        return None
+        return {"objects": [], "relations": []}
 
     if inp_image is not None:
         visualize_detections(
@@ -379,7 +321,7 @@ def get_scene_graph(
 
     # Convert detections to object format
     objects = []
-    for idx, det in enumerate(refined_dets):
+    for idx, det in zip(sorted(bbox), refined_dets):
         x1, y1, x2, y2, scores_classes = det
 
         # Filter out low confidence predictions

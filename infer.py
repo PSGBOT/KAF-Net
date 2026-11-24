@@ -1,7 +1,10 @@
+if __name__ == "__main__":
+    from utils.model_routing import route_model
+
+    route_model("infer")
+
 import argparse
-import json
-from logging import debug
-from multiprocessing import process
+from pathlib import Path
 import torch
 import numpy as np
 from PIL import Image
@@ -12,9 +15,9 @@ import os
 import shutil
 from utils.utils import load_model_for_inference
 
-from nets.kaf import kaf_resdcn as reskaf
-from nets.kaf.kaf_swint import get_kaf_swint
-from nets.kaf import hourglass
+from utils.model_routing import kaf_architecture
+from utils.eval.kaf import kaf_fields
+from utils.eval.reporting import atomic_json
 from datasets.utils.augimg import process_image_and_masks, process_image_and_masks_mcm
 from get_scene import get_scene_graph
 from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
@@ -23,25 +26,25 @@ from datasets.psr import PSR_FUNC_CAT, PSR_KR_CAT
 def parse_args():
     parser = argparse.ArgumentParser(description="KAF-Net Inference")
     parser.add_argument(
-        "--image_path", type=str, required=True, help="Path to the input image."
+        "--image_path", "--sample-dir", type=Path, required=True, help="PSR sample directory."
     )
     parser.add_argument(
-        "--model_weights",
-        type=str,
+        "--model_weights", "--checkpoint",
+        type=Path,
         required=True,
         help="Path to the pre-trained model weights (.pth file).",
     )
     parser.add_argument(
-        "--output_json_path",
-        type=str,
-        default="output.json",
+        "--output_json_path", "--output",
+        type=Path,
+        default=Path("output.json"),
         help="Path to save the output JSON file.",
     )
     parser.add_argument(
         "--arch",
         type=str,
         default="resdcn_50",
-        help="Model architecture. Currently only resdcn_50 is supported.",
+        help="Model architecture (e.g. swin, resdcn_50, dsflash_swin, dsflash_swin_functions).",
     )
     parser.add_argument(
         "--num_classes", type=int, default=13, help="Number of object classes."
@@ -74,35 +77,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Load the model
-    if args.arch == "reskaf_50":
-        model = reskaf.get_kaf_resdcn(
-            num_layers=50,
-        )
-        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
-    elif args.arch == "reskaf_18":
-        model = reskaf.get_kaf_resdcn(
-            num_layers=18,
-        )
-        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
-    elif args.arch == "reskaf_101":
-        model = reskaf.get_kaf_resdcn(
-            num_layers=101,
-        )
-        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
-    elif "swin" in args.arch:
-        model = get_kaf_swint(
-            head_conv=64,
-        )
-        down_ratio = {"p5": 32, "p4": 16, "p3": 8, "p2": 4}
-    elif args.arch == "small_hg":
-        model = hourglass.get_kaf_hourglass["hourglass_small"]
-        down_ratio = {"p2": 4}
-    elif args.arch == "large_hg":
-        model = hourglass.get_kaf_hourglass["hourglass_large"]
-        down_ratio = {"p2": 4}
-    else:
-        raise ValueError(f"Unsupported architecture: {args.arch}")
+    model, down_ratio, channels = kaf_architecture(args.arch, pretrained=False)
 
     # Load weights
     model, _ = load_model_for_inference(model, args.model_weights)
@@ -113,24 +88,26 @@ def main():
     model = model.to(device)
 
     # Load and preprocess the image
-    inp_image, bbox = process_image_and_masks_mcm(args.image_path)
+    preprocess = process_image_and_masks_mcm if channels == 6 else process_image_and_masks
+    inp_image, bbox = preprocess(args.image_path)
     inp_image = torch.from_numpy(inp_image).unsqueeze(0).to(device)
     print(inp_image.shape)
     image_name = os.path.basename(args.image_path)
     output_dir = os.path.join(
         args.visualization_dir, f"{os.path.splitext(image_name)[0]}"
     )
-    os.makedirs(output_dir, exist_ok=True)
-    shutil.copytree(
-        args.image_path, os.path.join(output_dir, image_name), dirs_exist_ok=True
-    )
+    if args.visualize_output:
+        os.makedirs(output_dir, exist_ok=True)
+        shutil.copytree(
+            args.image_path, os.path.join(output_dir, image_name), dirs_exist_ok=True
+        )
 
     # Perform inference
     with torch.no_grad():
         outputs = model(inp_image)
         # The model output is a list containing one element, which is another list of tensors.
         # The inner list contains [hmap, regs, w_h_, raf]
-        hmaps, regs, w_h_s, rafs = outputs
+        hmaps, regs, w_h_s, rafs = kaf_fields(outputs)
 
         for fpn_level in range(len(down_ratio)):
             hmap = hmaps[fpn_level]
@@ -149,21 +126,16 @@ def main():
                     fpn_level,
                 )
 
-        # Post-processing parameters
-        max_objects = 100  # Maximum number of objects to detect
-        topk_relations = 50  # Top K relations to consider
-        get_scene_graph(
+        graph = get_scene_graph(
             hmaps,
             regs,
             w_h_s,
             rafs,
             bbox,
-            topk_relations,
-            inp_image=inp_image,
-            debug=True,
+            inp_image=inp_image if args.visualize_output else None,
+            debug=args.visualize_output,
         )
-
-    # print(f"Inference complete. Results saved to {args.output_json_path}")
+        atomic_json(args.output_json_path, graph)
 
 
 def visualize_heatmap(hmap, output_dir, image_name, fpn_level=0):

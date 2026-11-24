@@ -14,18 +14,46 @@ sbatch --open-mode=append --output="$run_dir/train.log" experiments/dsflash_psr.
     "$source_dir" "$run_dir" "$dataset" "$manifest" "$config"
 ```
 
-The split groups samples by the SHA-256 of `src_img.png`, removes identical copies with the same sample name, and prioritizes coverage of rare labels across disjoint groups. Training saves `latest.pt` and `best.pt` and selects the latter by validation macro AP. Append `--resume` to the launcher for an interrupted run. The best checkpoint is evaluated on test after the configured final epoch.
+The split groups samples by the SHA-256 of `src_img.png`, removes identical copies with the same sample name, and prioritizes coverage of rare labels across disjoint groups. Append `--resume` to the launcher for an interrupted run.
+
+## Model routing and evaluation
+
+Use the same `train.py`, `evaluate.py`, and `infer.py` entry points for all three Swin models.
+
+| `--arch` | Prediction | Weight format |
+| --- | --- | --- |
+| `swin` | Original KAF-Swin scene graph | KAF `.pth` |
+| `dsflash_swin` | DSFlash relations | DSFlash `.pt` |
+| `dsflash_swin_functions` | DSFlash relations and part functions | DSFlash `.pt` with the function head |
+
+```bash
+python train.py --arch dsflash_swin --data-dir "$dataset" --manifest "$manifest" --run-dir "$run_dir"
+python evaluate.py --arch dsflash_swin --data-dir "$dataset" --manifest "$manifest" \
+    --checkpoint "$run_dir/best.pt" --output "$run_dir/standalone-test.json"
+python evaluate.py --arch swin --data-dir "$dataset" --manifest "$manifest" \
+    --checkpoint "$kaf_checkpoint" --output "$kaf_report"
+```
+
+KAF training and evaluation also accept `--manifest` for the grouped split. For KAF without a manifest, point `--data-dir` to a directory containing the existing split folders. Both evaluators default to the test split and accept `--split val`. TensorBoard event files for standalone evaluation go in `tensorboard/` alongside the JSON report. Set `--tensorboard-dir` to use another location.
+
+Training saves a numbered checkpoint and evaluates the complete validation split every five epochs and at the final epoch. Set `checkpoint_interval` in the DSFlash JSON or `--val_interval` for KAF to change the interval. DSFlash also saves at an explicitly requested `--stop-after-epoch`. DSFlash keeps `latest.pt` and `best.pt` in the run directory. KAF keeps `checkpoint.pth` and `best.pth` in its checkpoint directory. The default selection metric is validation relation macro AP, with function macro AP used for the frozen DSFlash function-head run.
+
+The final test evaluates the best validation checkpoint on the held-out split. Legacy KAF datasets with a `test/` partition use that partition. KAF reports use the full annotations. The KAF `--prune` setting applies to training and validation loss. Each evaluation saves a JSON report and writes aggregate metrics, class scores and support to TensorBoard. The training environment needs `tensorboardX` or `tensorboard` to write events. Install `tensorboard` to run the dashboard. Use `$run_dir/tensorboard` when training with `--run-dir`, or `logs/<log_name>` for legacy KAF runs.
+
+```bash
+tensorboard --logdir "$run_dir/tensorboard"
+```
 
 ## Predict from supplied masks
 
 Use a directory with `src_img.png` and numbered `mask<ID>.png` files. An annotation file is optional for inference. The JSON output contains per-label probabilities for each valid unordered pair of mask IDs.
 
 ```bash
-python -m experiments.dsflash_psr infer --checkpoint "$run_dir/best.pt" \
+python infer.py --arch dsflash_swin --checkpoint "$run_dir/best.pt" \
     --sample-dir "$sample_dir" --output "$run_dir/prediction.json"
 ```
 
-Validation and test use exact mask-pair identity and report relation macro AP, R@5/10/20, mR@5/10/20 and the support for each relation class. AP uses annotated pairs. Recall ranks every valid pair. Use the same grouped manifest for any new KAF comparison.
+Validation and test report relation macro AP, R@5/10/20, mR@5/10/20 and per-class support. AP uses annotated pairs, and recall ranks scored predictions per image. KAF associates its proposals with input masks before evaluation. Labels for unavailable masks or missing predictions remain in the recall and AP denominators. Mask-function AP uses annotated masks and is reported under `functions`. Use the same grouped manifest for a KAF and DSFlash comparison.
 
 ## Train a part-function head
 

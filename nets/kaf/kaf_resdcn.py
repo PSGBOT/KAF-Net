@@ -517,10 +517,11 @@ resdcn_spec = {
 }
 
 
-def get_kaf_resdcn(num_layers, head_conv=64, num_classes=13, num_rel=14):
+def get_kaf_resdcn(num_layers, head_conv=64, num_classes=13, num_rel=14, *, pretrained=True):
     block_classes, layers = resdcn_spec[num_layers]
     model = KAF_ResDCN(block_classes, layers, head_conv, num_classes, num_rel)
-    model.load_pretrained_resnet(num_layers=num_layers)
+    if pretrained:
+        model.load_pretrained_resnet(num_layers=num_layers)
     model.init_weights(num_layers)
     return model
 

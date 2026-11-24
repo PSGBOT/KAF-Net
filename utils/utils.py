@@ -51,9 +51,11 @@ def flip_lr_off(x, flip_idx):
     return torch.from_numpy(tmp.reshape(shape)).to(x.device)
 
 
-def load_model_for_inference(model, checkpoint_path):
+def load_model_for_inference(model, checkpoint_path, *, strict=False):
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
+    if {"model", "config", "manifest_sha256"} <= checkpoint.keys():
+        raise ValueError("This checkpoint requires --arch dsflash_swin or --arch dsflash_swin_functions.")
     if "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
         start_epoch = checkpoint.get("epoch", 0)
@@ -73,7 +75,7 @@ def load_model_for_inference(model, checkpoint_path):
         state_dict = new_state_dict
 
     # Load the state dict
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=strict)
 
     if missing_keys:
         print(f"Missing keys: {missing_keys}")
@@ -85,7 +87,9 @@ def load_model_for_inference(model, checkpoint_path):
 
 
 def load_model(model, pretrain_dir):
-    ckpt = torch.load(pretrain_dir, map_location="cuda:0")
+    ckpt = torch.load(pretrain_dir, map_location="cpu")
+    if {"model", "config", "manifest_sha256"} <= ckpt.keys():
+        raise ValueError("This checkpoint requires --arch dsflash_swin or --arch dsflash_swin_functions.")
     state_dict_ = ckpt["model_state_dict"]
     print("Loaded pretrained weights from %s!" % pretrain_dir)
 

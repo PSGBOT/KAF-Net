@@ -1,7 +1,7 @@
 """Prepare, train, evaluate, or run DSFlash on supplied PSR part masks."""
 
 import argparse
-import hashlib
+from contextlib import closing
 import json
 import math
 import os
@@ -17,34 +17,45 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from datasets.psr_labels import PSR_FUNC_CAT, PSR_KR_CAT
-from datasets.psr_pairs import PSRPairs, annotation_functions, collate_pairs, create_manifest, load_sample
+from datasets.psr_pairs import (
+    PSRPairs, annotation_functions, collate_pairs, create_manifest, load_sample, read_manifest,
+)
 from experiments.dsflash_metrics import function_metrics, relation_metrics
 from nets.kaf.dsflash import DSFlashSwin
+from utils.eval.reporting import atomic_json, checkpoint_due, write_evaluation
+from utils.summary import create_tensorboard_summary, link_checkpoint, publish_checkpoint
 
 DEFAULT_CONFIG = Path(__file__).with_name("dsflash_swin_psr.json")
 
 
-def atomic_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
-    temporary.replace(path)
-
-
-def update_best_checkpoint(latest):
-    best_path = latest.with_name("best.pt")
-    best_temporary = best_path.with_suffix(".tmp")
-    best_temporary.unlink(missing_ok=True)
-    os.link(latest, best_temporary)
-    best_temporary.replace(best_path)
-
-
 def save_checkpoint(path, checkpoint):
-    temporary = path.with_suffix(".tmp")
-    torch.save(checkpoint, temporary)
-    temporary.replace(path)
-    if checkpoint["epoch"] == checkpoint["best_epoch"]:
-        update_best_checkpoint(path)
+    epoch = checkpoint["epoch"]
+    aliases = [path.name]
+    if epoch == checkpoint["best_epoch"]:
+        aliases.append("best.pt")
+    publish_checkpoint(checkpoint, path.with_name(f"epoch-{epoch:03d}.pt"), aliases=aliases)
+
+
+def load_dsflash_checkpoint(path, *, require_functions=False):
+    checkpoint = torch.load(path, map_location="cpu")
+    if not isinstance(checkpoint, dict) or not {"model", "config", "manifest_sha256"} <= checkpoint.keys():
+        raise ValueError(f"{path} is not a DSFlash PSR checkpoint.")
+    if require_functions and not checkpoint["config"].get("function_head"):
+        raise ValueError(f"{path} has no DSFlash function head.")
+    return checkpoint
+
+
+def completed_test(run_dir, checkpoint_epoch, manifest_hash):
+    try:
+        report = json.loads((run_dir / "test.json").read_text())
+    except (ValueError, OSError):
+        return False
+    return (
+        isinstance(report, dict)
+        and report.get("checkpoint_epoch") == checkpoint_epoch
+        and report.get("manifest_sha256") == manifest_hash
+        and any((run_dir / "tensorboard").glob("events.out.tfevents.*"))
+    )
 
 
 def init_device():
@@ -197,20 +208,6 @@ def train_epoch(model, loader, optimizer, scaler, config, pos_weight, device, ra
     return mean_loss
 
 
-def read_manifest(path):
-    content = path.read_bytes()
-    manifest = json.loads(content)
-    if manifest.get("version") != 1:
-        raise ValueError("Unsupported PSR split manifest version.")
-    grouped = [
-        {manifest["source_hashes"][sample] for sample in manifest["splits"][split]}
-        for split in ("train", "val", "test")
-    ]
-    if not all(grouped) or len(set.union(*grouped)) != sum(map(len, grouped)):
-        raise ValueError("PSR training, validation, and test must have nonempty and disjoint source-image groups.")
-    return manifest, hashlib.sha256(content).hexdigest()
-
-
 def function_support(data_dir, samples):
     counts = [0] * len(PSR_FUNC_CAT)
     annotated = 0
@@ -228,13 +225,22 @@ def train(args):
     if args.manifest is None or args.data_dir is None or args.run_dir is None:
         raise ValueError("Training requires --manifest, --data-dir, and --run-dir.")
     config = json.loads(args.config.read_text())
+    if args.require_functions and not config.get("function_head"):
+        raise ValueError("--arch dsflash_swin_functions requires a configuration with function_head enabled.")
     manifest, manifest_hash = read_manifest(args.manifest)
     args.run_dir.mkdir(parents=True, exist_ok=True)
     latest = args.run_dir / "latest.pt"
     if latest.is_file() and not args.resume:
         raise FileExistsError(f"{latest} already exists. Use --resume or another run directory.")
-    checkpoint = torch.load(latest, map_location="cpu") if args.resume else None
-    if checkpoint and (checkpoint["config"] != config or checkpoint["manifest_sha256"] != manifest_hash):
+    checkpoint = load_dsflash_checkpoint(latest) if args.resume else None
+    checkpoint_interval = config.get("checkpoint_interval", 5)
+    if not isinstance(checkpoint_interval, int) or checkpoint_interval < 0:
+        raise ValueError("checkpoint_interval must be a nonnegative integer.")
+    train_config = {k: v for k, v in config.items() if k != "checkpoint_interval"}
+    if checkpoint and (
+        {k: v for k, v in checkpoint["config"].items() if k != "checkpoint_interval"} != train_config
+        or checkpoint["manifest_sha256"] != manifest_hash
+    ):
         raise ValueError("Resume requires the same training configuration and split manifest.")
 
     function_only = config.get("function_head", False)
@@ -250,7 +256,7 @@ def train(args):
         model.load_state_dict(checkpoint["model"])
     init_checkpoint = checkpoint.get("init_checkpoint") if checkpoint else None
     if args.init_from:
-        initial = torch.load(args.init_from, map_location="cpu")
+        initial = load_dsflash_checkpoint(args.init_from)
         if initial["manifest_sha256"] != manifest_hash:
             raise ValueError("Initialization checkpoint and function-head run must use the same split manifest.")
         missing, unexpected = model.load_state_dict(initial["model"], strict=False)
@@ -291,7 +297,7 @@ def train(args):
         start_epoch = checkpoint["epoch"] + 1
         if rank == 0 and checkpoint["epoch"] == best_epoch:
             # Recover the best link if the previous run stopped between the two atomic renames.
-            update_best_checkpoint(latest)
+            link_checkpoint(latest, latest.with_name("best.pt"))
     del checkpoint
 
     if function_only:
@@ -334,55 +340,65 @@ def train(args):
               flush=True)
 
     end_epoch = min(args.stop_after_epoch or config["epochs"], config["epochs"])
-    for epoch in range(start_epoch, end_epoch + 1):
-        seed_epoch(config["seed"], rank, epoch)
-        training.sampler.set_epoch(epoch)
-        loss = train_epoch(train_model, training, optimizer, scaler, config, pos_weight, device, rank, world_size, epoch)
-        if world_size > 1:
-            # Validation uses a shard of the dataset per rank, with no padded duplicates.
-            for buffer in model.buffers():
-                dist.broadcast(buffer, src=0)
-        metrics = evaluate(model, validation, device, rank, world_size)
-        scheduler.step()
+    if start_epoch > end_epoch == config["epochs"] and completed_test(args.run_dir, best_epoch, manifest_hash):
         if rank == 0:
-            ap = (metrics["functions"] if function_only else metrics)["macro_AP"]
-            if ap is None:
-                raise ValueError("Validation has no positive labels.")
-            best = ap > best_ap
-            if best:
-                best_ap = ap
-                best_epoch = epoch
-            atomic_json(args.run_dir / f"val-{epoch:03d}.json", metrics | {"epoch": epoch, "train_loss": loss})
-            save_checkpoint(latest, {
-                "config": config, "manifest_sha256": manifest_hash,
-                "init_checkpoint": init_checkpoint,
-                "epoch": epoch, "best_epoch": best_epoch, "best_val_macro_ap": best_ap,
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
-                "scaler": scaler.state_dict(),
-            })
-            print(f"epoch={epoch} train_loss={loss:.6f} val_macro_AP={metrics['macro_AP']:.6f}"
-                  + (f" function_macro_AP={ap:.6f}" if function_only else "") + f" best={best}", flush=True)
+            print(f"Test already recorded in {args.run_dir / 'test.json'}", flush=True)
+        return
+    with closing(create_tensorboard_summary(rank, log_dir=str(args.run_dir / "tensorboard"))) as writer:
+        for epoch in range(start_epoch, end_epoch + 1):
+            seed_epoch(config["seed"], rank, epoch)
+            training.sampler.set_epoch(epoch)
+            loss = train_epoch(train_model, training, optimizer, scaler, config, pos_weight, device, rank, world_size, epoch)
+            scheduler.step()
+            writer.add_scalar("train/loss", loss, epoch)
+            if not checkpoint_due(epoch, end_epoch, checkpoint_interval):
+                continue
+            if world_size > 1:
+                # Validation uses a shard of the dataset per rank, with no padded duplicates.
+                for buffer in model.buffers():
+                    dist.broadcast(buffer, src=0)
+            metrics = evaluate(model, validation, device, rank, world_size)
+            if rank == 0:
+                ap = (metrics["functions"] if function_only else metrics)["macro_AP"]
+                if ap is None:
+                    raise ValueError("Validation has no positive labels.")
+                best = ap > best_ap
+                if best:
+                    best_ap = ap
+                    best_epoch = epoch
+                atomic_json(args.run_dir / f"val-{epoch:03d}.json", metrics | {"epoch": epoch, "train_loss": loss})
+                save_checkpoint(latest, {
+                    "config": config, "manifest_sha256": manifest_hash,
+                    "init_checkpoint": init_checkpoint,
+                    "epoch": epoch, "best_epoch": best_epoch, "best_val_macro_ap": best_ap,
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
+                    "scaler": scaler.state_dict(),
+                })
+                write_evaluation(writer, "val", metrics, epoch)
+                print(f"epoch={epoch} train_loss={loss:.6f} val_macro_AP={metrics['macro_AP']}"
+                      + (f" function_macro_AP={ap:.6f}" if function_only else "") + f" best={best}", flush=True)
 
-    if end_epoch == config["epochs"]:
-        if world_size > 1:
-            dist.barrier()
-        best = torch.load(args.run_dir / "best.pt", map_location="cpu")
-        model.load_state_dict(best["model"])
-        test = make_loader(config, args.data_dir, manifest["splits"]["test"], device, False, rank, world_size)
-        metrics = evaluate(model, test, device, rank, world_size)
-        if rank == 0:
-            atomic_json(args.run_dir / "test.json", metrics | {
-                "checkpoint_epoch": best["epoch"], "manifest_sha256": manifest_hash,
-            })
-            print(f"test_macro_AP={metrics['macro_AP']:.6f} checkpoint_epoch={best['epoch']}", flush=True)
-            if function_only:
-                print(f"test_function_macro_AP={metrics['functions']['macro_AP']:.6f}", flush=True)
+        if end_epoch == config["epochs"]:
+            if world_size > 1:
+                dist.barrier()
+            best = load_dsflash_checkpoint(args.run_dir / "best.pt")
+            model.load_state_dict(best["model"])
+            test = make_loader(config, args.data_dir, manifest["splits"]["test"], device, False, rank, world_size)
+            metrics = evaluate(model, test, device, rank, world_size)
+            if rank == 0:
+                write_evaluation(writer, "test", metrics, best["epoch"])
+                atomic_json(args.run_dir / "test.json", metrics | {
+                    "checkpoint_epoch": best["epoch"], "manifest_sha256": manifest_hash,
+                })
+                print(f"test_macro_AP={metrics['macro_AP']} checkpoint_epoch={best['epoch']}", flush=True)
+                if function_only:
+                    print(f"test_function_macro_AP={metrics['functions']['macro_AP']}", flush=True)
 
 
 def run_evaluation(args):
     manifest, manifest_hash = read_manifest(args.manifest)
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = load_dsflash_checkpoint(args.checkpoint, require_functions=args.require_functions)
     if checkpoint["manifest_sha256"] != manifest_hash:
         raise ValueError("Evaluation manifest differs from the one used for training.")
     config = checkpoint["config"]
@@ -394,13 +410,15 @@ def run_evaluation(args):
     metrics = evaluate(model, loader, device, rank, world_size)
     if rank == 0:
         atomic_json(args.output, metrics | {"checkpoint_epoch": checkpoint["epoch"], "manifest_sha256": manifest_hash})
+        with closing(create_tensorboard_summary(log_dir=str(args.tensorboard_dir or args.output.parent / "tensorboard"))) as writer:
+            write_evaluation(writer, args.split, metrics, checkpoint["epoch"])
 
 
 @torch.no_grad()
 def infer(args):
     device, _, _ = init_device()
     configure_worker(None)
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = load_dsflash_checkpoint(args.checkpoint, require_functions=args.require_functions)
     config = checkpoint["config"]
     model = load_model(config, device, pretrained=False)
     model.load_state_dict(checkpoint["model"])
@@ -442,27 +460,31 @@ def main():
     train_parser = commands.add_parser("train")
     train_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     train_parser.add_argument("--manifest", required=True, type=Path)
-    train_parser.add_argument("--data-dir", required=True, type=Path)
+    train_parser.add_argument("--data-dir", "--data_dir", required=True, type=Path)
     train_parser.add_argument("--run-dir", required=True, type=Path)
     initialization = train_parser.add_mutually_exclusive_group()
     initialization.add_argument("--resume", action="store_true")
     initialization.add_argument("--init-from", type=Path, help="Relation-only checkpoint for frozen feature training.")
     train_parser.add_argument("--stop-after-epoch", type=int)
     train_parser.add_argument("--no-pretrained", action="store_true")
+    train_parser.add_argument("--require-functions", action="store_true", help=argparse.SUPPRESS)
     train_parser.set_defaults(run=train)
 
     eval_parser = commands.add_parser("evaluate")
     eval_parser.add_argument("--manifest", required=True, type=Path)
-    eval_parser.add_argument("--data-dir", required=True, type=Path)
-    eval_parser.add_argument("--checkpoint", required=True, type=Path)
+    eval_parser.add_argument("--data-dir", "--data_dir", required=True, type=Path)
+    eval_parser.add_argument("--checkpoint", "--model_path", required=True, type=Path)
     eval_parser.add_argument("--split", choices=("val", "test"), default="test")
     eval_parser.add_argument("--output", required=True, type=Path)
+    eval_parser.add_argument("--tensorboard-dir", type=Path)
+    eval_parser.add_argument("--require-functions", action="store_true")
     eval_parser.set_defaults(run=run_evaluation)
 
     infer_parser = commands.add_parser("infer")
-    infer_parser.add_argument("--sample-dir", required=True, type=Path, help="Folder with src_img.png and mask<ID>.png files.")
-    infer_parser.add_argument("--checkpoint", required=True, type=Path)
-    infer_parser.add_argument("--output", required=True, type=Path)
+    infer_parser.add_argument("--sample-dir", "--image_path", required=True, type=Path, help="Folder with src_img.png and mask<ID>.png files.")
+    infer_parser.add_argument("--checkpoint", "--model_weights", required=True, type=Path)
+    infer_parser.add_argument("--output", "--output_json_path", required=True, type=Path)
+    infer_parser.add_argument("--require-functions", action="store_true")
     infer_parser.set_defaults(run=infer)
 
     args = parser.parse_args()

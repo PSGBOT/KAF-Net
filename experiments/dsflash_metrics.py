@@ -10,6 +10,8 @@ CUTOFFS = (5, 10, 20)
 def _average_precision(scores, labels, support):
     if not support:
         return None
+    predicted = np.isfinite(scores)
+    scores, labels = scores[predicted], labels[predicted]
     if not len(scores):
         return 0.0
     order = np.argsort(-scores, kind="stable")
@@ -26,10 +28,11 @@ def function_metrics(batches):
     classes = len(PSR_FUNC_CAT)
     missed = np.zeros(classes, dtype=int)
     scores, labels = [], []
-    scored_masks = 0
+    scored_masks = predicted_masks = 0
     for logits, targets, unavailable in batches:
         annotated = targets.any(axis=1)
         scored_masks += len(logits)
+        predicted_masks += int(np.isfinite(logits).any(axis=1).sum())
         scores.append(logits[annotated])
         labels.append(targets[annotated])
         missed += unavailable
@@ -39,6 +42,7 @@ def function_metrics(batches):
     aps = [_average_precision(scores[:, c], labels[:, c], support[c]) for c in range(classes)]
     return {
         "scored_masks": scored_masks,
+        "predicted_masks": predicted_masks,
         "annotated_scored_masks": len(scores),
         "macro_AP": float(np.mean([ap for ap in aps if ap is not None])) if support.any() else None,
         "per_class": {
@@ -54,15 +58,19 @@ def relation_metrics(samples):
     support, unavailable = np.zeros(classes, dtype=int), np.zeros(classes, dtype=int)
     hits = np.zeros((len(CUTOFFS), classes), dtype=int)
     all_scores, all_labels = [], []
-    candidate_count = 0
+    candidate_count = predicted_pairs = 0
 
     for scores, targets, missed, labeled in samples:
         support += targets.sum(axis=0) + missed
         unavailable += missed
         candidate_count += len(scores)
+        valid_scores = np.isfinite(scores)
+        predicted_pairs += int(valid_scores.any(axis=1).sum())
         all_scores.append(scores[labeled])
         all_labels.append(targets[labeled])
-        flat_ranks = np.argsort(-scores.ravel(), kind="stable")[:max(CUTOFFS)]
+        flat_scores = scores.ravel()
+        finite = np.flatnonzero(valid_scores)
+        flat_ranks = finite[np.argsort(-flat_scores[finite], kind="stable")[:max(CUTOFFS)]]
         for cutoff_index, cutoff in enumerate(CUTOFFS):
             selected = flat_ranks[:cutoff]
             hit_labels = selected[targets.ravel()[selected]] % classes
@@ -76,6 +84,7 @@ def relation_metrics(samples):
     return {
         "samples": len(samples),
         "scored_pairs": candidate_count,
+        "predicted_pairs": predicted_pairs,
         "annotated_scored_pairs": len(scores),
         "cutoffs": CUTOFFS,
         "macro_AP": float(np.mean([ap for ap in aps if ap is not None])) if observed.any() else None,

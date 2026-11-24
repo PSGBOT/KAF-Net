@@ -148,8 +148,8 @@ class SwinV2Features(nn.Module):
 
 
 class KAF_SwinT(SwinV2Features):
-    def __init__(self, head_conv, num_classes, num_rel):
-        super().__init__()
+    def __init__(self, head_conv, num_classes, num_rel, *, image_size=512, pretrained=True):
+        super().__init__(image_size=image_size, pretrained=pretrained)
         self.num_classes = num_classes
         self.num_rel = num_rel
 
@@ -226,8 +226,8 @@ class KAF_SwinT(SwinV2Features):
                 nn.init.constant_(m.bias, 0)
 
 
-def get_kaf_swint(head_conv=64, num_classes=13, num_rel=14):
-    model = KAF_SwinT(head_conv, num_classes, num_rel)
+def get_kaf_swint(head_conv=64, num_classes=13, num_rel=14, *, image_size=512, pretrained=True):
+    model = KAF_SwinT(head_conv, num_classes, num_rel, image_size=image_size, pretrained=pretrained)
     model.init_weights()
     return model
 

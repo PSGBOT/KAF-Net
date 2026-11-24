@@ -3,6 +3,7 @@ import sys
 import torch
 import logging
 from datetime import datetime
+from pathlib import Path
 
 # return a fake summarywriter if tensorbaordX is not installed
 
@@ -43,6 +44,22 @@ class EmptySummaryWriter:
     def close(self):
         pass
 
+    def flush(self):
+        pass
+
+
+def create_tensorboard_summary(distributed_rank=0, **kwargs):
+    if distributed_rank != 0:
+        return EmptySummaryWriter()
+    try:
+        from tensorboardX import SummaryWriter as TensorBoardWriter
+    except ImportError:
+        try:
+            from torch.utils.tensorboard import SummaryWriter as TensorBoardWriter
+        except ImportError as error:
+            raise RuntimeError("Install tensorboardX or tensorboard to record evaluation metrics.") from error
+    return TensorBoardWriter(**kwargs)
+
 
 def create_summary(distributed_rank=0, **kwargs):
     if distributed_rank > 0:
@@ -76,6 +93,23 @@ def create_logger(distributed_rank=0, save_dir=None):
     return logger
 
 
+def link_checkpoint(source, target):
+    if target.is_file() and source.samefile(target):
+        return
+    temporary = target.with_name(target.name + ".tmp")
+    temporary.unlink(missing_ok=True)
+    os.link(source, temporary)
+    temporary.replace(target)
+
+
+def publish_checkpoint(checkpoint, path, *, aliases=()):
+    temporary = path.with_name(path.name + ".tmp")
+    torch.save(checkpoint, temporary)
+    temporary.replace(path)
+    for alias in aliases:
+        link_checkpoint(path, path.with_name(alias))
+
+
 class Saver:
     def __init__(self, distributed_rank, save_dir):
         self.distributed_rank = distributed_rank
@@ -83,9 +117,9 @@ class Saver:
         os.makedirs(self.save_dir, exist_ok=True)
         return
 
-    def save(self, obj, save_name):
+    def save(self, obj, save_name, *, aliases=()):
         if self.distributed_rank == 0:
-            torch.save(obj, os.path.join(self.save_dir, save_name + ".pth"))
+            publish_checkpoint(obj, Path(self.save_dir) / (save_name + ".pth"), aliases=aliases)
             return "checkpoint saved in %s !" % os.path.join(self.save_dir, save_name)
         else:
             return ""

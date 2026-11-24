@@ -9,6 +9,7 @@
   "patch_grid": 16,
   "pair_chunk": 32,
   "epochs": 20,
+  "checkpoint_interval": 5,
   "warmup_epochs": 1,
   "global_batch_size": 32,
   "workers_per_gpu": 4,

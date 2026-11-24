@@ -129,6 +129,20 @@ def _sample_fingerprint(sample):
     return tuple((path.name, _sha256(path)) for path in files)
 
 
+def read_manifest(path):
+    content = path.read_bytes()
+    manifest = json.loads(content)
+    if manifest.get("version") != 1:
+        raise ValueError("Unsupported PSR split manifest version.")
+    grouped = [
+        {manifest["source_hashes"][sample] for sample in manifest["splits"][split]}
+        for split in ("train", "val", "test")
+    ]
+    if not all(grouped) or len(set.union(*grouped)) != sum(map(len, grouped)):
+        raise ValueError("PSR training, validation, and test must have nonempty and disjoint source-image groups.")
+    return manifest, hashlib.sha256(content).hexdigest()
+
+
 def create_manifest(data_dir, seed, val_fraction, test_fraction):
     data_dir = Path(data_dir)
     source_hashes, labels_by_sample = {}, {}
