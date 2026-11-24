@@ -16,9 +16,9 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from datasets.psr_labels import PSR_KR_CAT
-from datasets.psr_pairs import PSRPairs, collate_pairs, create_manifest, load_sample
-from experiments.dsflash_metrics import relation_metrics
+from datasets.psr_labels import PSR_FUNC_CAT, PSR_KR_CAT
+from datasets.psr_pairs import PSRPairs, annotation_functions, collate_pairs, create_manifest, load_sample
+from experiments.dsflash_metrics import function_metrics, relation_metrics
 from nets.kaf.dsflash import DSFlashSwin
 
 DEFAULT_CONFIG = Path(__file__).with_name("dsflash_swin_psr.json")
@@ -63,6 +63,7 @@ def load_model(config, device, *, pretrained):
     return DSFlashSwin(
         len(PSR_KR_CAT), config["image_size"], config["width"], config["depth"], config["heads"],
         config["patch_grid"], config["pair_chunk"], pretrained=pretrained,
+        num_functions=len(PSR_FUNC_CAT) if config.get("function_head") else 0,
     ).to(device)
 
 
@@ -71,7 +72,7 @@ def model_inputs(batch, device):
 
 
 def make_loader(config, data_dir, samples, device, training, rank, world_size):
-    dataset = PSRPairs(data_dir, samples, config["image_size"], training)
+    dataset = PSRPairs(data_dir, samples, config["image_size"], training, functions=config.get("function_head", False))
     batch_size = config["global_batch_size"]
     if batch_size < world_size or batch_size % world_size:
         raise ValueError("Global batch size must be divisible by the number of training ranks.")
@@ -96,8 +97,16 @@ def configure_worker(_):
 def evaluate(model, loader, device, rank, world_size):
     model.eval()
     samples = []
+    function_batches = []
+    classify_functions = model.function_head is not None
     for batch in loader:
-        output = model(*model_inputs(batch, device))
+        inputs = model_inputs(batch, device)
+        if classify_functions:
+            output, functions = model(*inputs, parts=batch["parts"].to(device, non_blocking=True))
+            function_batches.append((functions.float().cpu().numpy(), batch["function_targets"].numpy(),
+                                     batch["function_unavailable"].numpy()))
+        else:
+            output = model(*inputs)
         scores = output.logits.float().cpu().numpy()
         pairs = batch["pairs"][:, 0].numpy()
         targets = batch["targets"].numpy()
@@ -108,11 +117,15 @@ def evaluate(model, loader, device, rank, world_size):
 
     if world_size > 1:
         shards = [None] * world_size
-        dist.all_gather_object(shards, samples)
+        dist.all_gather_object(shards, (samples, function_batches))
         if rank != 0:
             return None
-        samples = [sample for shard in shards for sample in shard]
-    return relation_metrics(samples)
+        samples = [sample for relations, _ in shards for sample in relations]
+        function_batches = [batch for _, functions in shards for batch in functions]
+    metrics = relation_metrics(samples)
+    if classify_functions:
+        metrics["functions"] = function_metrics(function_batches)
+    return metrics
 
 
 def seed_epoch(seed, rank, epoch):
@@ -123,28 +136,43 @@ def seed_epoch(seed, rank, epoch):
 
 
 def train_epoch(model, loader, optimizer, scaler, config, pos_weight, device, rank, world_size, epoch):
-    model.train()
+    function_only = config.get("function_head", False)
+    model.train(not function_only)
+    if function_only:
+        unwrapped = model.module if isinstance(model, DistributedDataParallel) else model
+        unwrapped.function_head.train()
     totals = torch.zeros(2, device=device)
     for step, batch in enumerate(loader, 1):
-        labeled = batch["labeled"]
+        targets = batch["function_targets"] if function_only else batch["targets"]
+        labeled = targets.any(dim=1) if function_only else batch["labeled"]
         support = labeled.sum().to(device, non_blocking=True)
         global_support = support.clone()
         if world_size > 1:
             dist.all_reduce(global_support)
         if not global_support.item():
             continue
-        batch["pairs"] = batch["pairs"][labeled]
-        inputs = model_inputs(batch, device)
-        targets = batch["targets"][labeled].to(device, non_blocking=True).float()
+        targets = targets[labeled].to(device, non_blocking=True).float()
         optimizer.zero_grad(set_to_none=True)
         with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
-            output = model(*inputs)
-        both_orders = torch.stack((output.logits.float(), output.swapped_logits.float()))
-        prediction_loss = F.binary_cross_entropy_with_logits(
-            both_orders, targets.expand_as(both_orders), pos_weight=pos_weight, reduction="none",
-        ).mean(dim=(0, 2))
-        per_pair = prediction_loss + config["consistency_weight"] * output.consistency
-        numerator = per_pair.sum()
+            if function_only:
+                parts = batch["parts"][labeled].to(device, non_blocking=True)
+                images = batch["images"].to(device, non_blocking=True)
+                masks = batch["masks"].to(device, non_blocking=True)
+                _, logits = model(images, masks, None, parts=parts)
+            else:
+                batch["pairs"] = batch["pairs"][labeled]
+                output = model(*model_inputs(batch, device))
+        if function_only:
+            per_item = F.binary_cross_entropy_with_logits(
+                logits.float(), targets, pos_weight=pos_weight, reduction="none",
+            ).mean(dim=1)
+        else:
+            both_orders = torch.stack((output.logits.float(), output.swapped_logits.float()))
+            prediction_loss = F.binary_cross_entropy_with_logits(
+                both_orders, targets.expand_as(both_orders), pos_weight=pos_weight, reduction="none",
+            ).mean(dim=(0, 2))
+            per_item = prediction_loss + config["consistency_weight"] * output.consistency
+        numerator = per_item.sum()
         loss = numerator * world_size / global_support.clamp_min(1)
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -154,9 +182,10 @@ def train_epoch(model, loader, optimizer, scaler, config, pos_weight, device, ra
         totals += torch.stack((numerator.detach(), support.float()))
 
         if rank == 0 and (step == 1 or step % config["log_interval"] == 0):
+            unit = "masks" if function_only else "pairs"
             print(
                 f"epoch={epoch} step={step}/{len(loader)} loss={float(loss):.6f} "
-                f"grad_norm={float(grad_norm):.4f} labeled_pairs={int(global_support)}",
+                f"grad_norm={float(grad_norm):.4f} labeled_{unit}={int(global_support)}",
                 flush=True,
             )
 
@@ -164,7 +193,7 @@ def train_epoch(model, loader, optimizer, scaler, config, pos_weight, device, ra
         dist.all_reduce(totals)
     mean_loss = float(totals[0] / totals[1].clamp_min(1))
     if not math.isfinite(mean_loss) or int(totals[1]) == 0:
-        raise RuntimeError(f"Invalid training epoch {epoch}: loss {mean_loss}, annotated pairs {int(totals[1])}")
+        raise RuntimeError(f"Invalid training epoch {epoch}: loss {mean_loss}, annotated items {int(totals[1])}")
     return mean_loss
 
 
@@ -182,6 +211,19 @@ def read_manifest(path):
     return manifest, hashlib.sha256(content).hexdigest()
 
 
+def function_support(data_dir, samples):
+    counts = [0] * len(PSR_FUNC_CAT)
+    annotated = 0
+    for sample in samples:
+        annotation = json.loads((data_dir / sample / "config.json").read_text())
+        by_mask = annotation_functions(annotation)
+        annotated += len(by_mask)
+        for classes in by_mask.values():
+            for index in classes:
+                counts[index] += 1
+    return [annotated, *counts]
+
+
 def train(args):
     if args.manifest is None or args.data_dir is None or args.run_dir is None:
         raise ValueError("Training requires --manifest, --data-dir, and --run-dir.")
@@ -195,20 +237,40 @@ def train(args):
     if checkpoint and (checkpoint["config"] != config or checkpoint["manifest_sha256"] != manifest_hash):
         raise ValueError("Resume requires the same training configuration and split manifest.")
 
+    function_only = config.get("function_head", False)
+    if function_only and not (args.init_from or checkpoint):
+        raise ValueError("Frozen function-head training requires --init-from or --resume.")
+    if args.init_from and not function_only:
+        raise ValueError("--init-from is for initializing a frozen function-head run.")
     device, rank, world_size = init_device()
     configure_worker(None)
     seed_epoch(config["seed"], rank, 0)
-    model = load_model(config, device, pretrained=not args.no_pretrained and checkpoint is None)
+    model = load_model(config, device, pretrained=not (args.no_pretrained or checkpoint or args.init_from))
     if checkpoint:
         model.load_state_dict(checkpoint["model"])
+    init_checkpoint = checkpoint.get("init_checkpoint") if checkpoint else None
+    if args.init_from:
+        initial = torch.load(args.init_from, map_location="cpu")
+        if initial["manifest_sha256"] != manifest_hash:
+            raise ValueError("Initialization checkpoint and function-head run must use the same split manifest.")
+        missing, unexpected = model.load_state_dict(initial["model"], strict=False)
+        expected = {f"function_head.{name}" for name in model.function_head.state_dict()}
+        if set(missing) != expected or unexpected:
+            raise ValueError(f"Expected a relation-only checkpoint. Missing={missing}, unexpected={unexpected}.")
+        init_checkpoint = str(args.init_from.resolve())
+        del initial
+    if function_only:
+        model.requires_grad_(False)
+        model.function_head.requires_grad_(True)
     train_model = DistributedDataParallel(
         model, device_ids=[device.index] if device.type == "cuda" else None,
     ) if world_size > 1 else model
 
-    optimizer = torch.optim.AdamW([
+    groups = [{"params": model.function_head.parameters(), "lr": config["head_lr"]}] if function_only else [
         {"params": model.encoder.parameters(), "lr": config["backbone_lr"]},
         {"params": list(model.fpn.parameters()) + list(model.head.parameters()), "lr": config["head_lr"]},
-    ], weight_decay=config["weight_decay"])
+    ]
+    optimizer = torch.optim.AdamW(groups, weight_decay=config["weight_decay"])
 
     def schedule(epoch):
         warmup = config["warmup_epochs"]
@@ -232,9 +294,19 @@ def train(args):
             update_best_checkpoint(latest)
     del checkpoint
 
-    positive = manifest["support"]["train"]
-    support = torch.tensor([positive["labels"][name] for name in PSR_KR_CAT], device=device).float()
-    pos_weight = ((positive["labeled_pairs"] - support) / support.clamp_min(1)).sqrt()
+    if function_only:
+        counts = function_support(args.data_dir, manifest["splits"]["train"]) if rank == 0 else [0] * (len(PSR_FUNC_CAT) + 1)
+        counts = torch.tensor(counts, device=device)
+        if world_size > 1:
+            dist.broadcast(counts, src=0)
+        total, support = counts[0], counts[1:].float()
+        if not total.item():
+            raise ValueError("No annotated masks in the training partition.")
+    else:
+        positive = manifest["support"]["train"]
+        support = torch.tensor([positive["labels"][name] for name in PSR_KR_CAT], device=device).float()
+        total = positive["labeled_pairs"]
+    pos_weight = ((total - support) / support.clamp_min(1)).sqrt()
     pos_weight = torch.where(support > 0, pos_weight.clamp(1, config["max_positive_weight"]), 1)
     training, validation = [
         make_loader(config, args.data_dir, manifest["splits"][name], device, name == "train", rank, world_size)
@@ -253,10 +325,12 @@ def train(args):
             "device": str(device),
             "torch": str(torch.__version__),
             "label_support": manifest["support"],
+            "init_checkpoint": init_checkpoint,
+            "selection_metric": "functions.macro_AP" if function_only else "macro_AP",
         })
         print(f"DSFlash training ranks={world_size} batch={config['global_batch_size']} "
               f"train={len(training.dataset)} val={len(validation.dataset)} "
-              f"starting_epoch={start_epoch} trainable_parameters={sum(p.numel() for p in model.parameters())}",
+              f"starting_epoch={start_epoch} trainable_parameters={sum(p.numel() for p in model.parameters() if p.requires_grad)}",
               flush=True)
 
     end_epoch = min(args.stop_after_epoch or config["epochs"], config["epochs"])
@@ -271,7 +345,7 @@ def train(args):
         metrics = evaluate(model, validation, device, rank, world_size)
         scheduler.step()
         if rank == 0:
-            ap = metrics["macro_AP"]
+            ap = (metrics["functions"] if function_only else metrics)["macro_AP"]
             if ap is None:
                 raise ValueError("Validation has no positive labels.")
             best = ap > best_ap
@@ -281,12 +355,14 @@ def train(args):
             atomic_json(args.run_dir / f"val-{epoch:03d}.json", metrics | {"epoch": epoch, "train_loss": loss})
             save_checkpoint(latest, {
                 "config": config, "manifest_sha256": manifest_hash,
+                "init_checkpoint": init_checkpoint,
                 "epoch": epoch, "best_epoch": best_epoch, "best_val_macro_ap": best_ap,
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
                 "scaler": scaler.state_dict(),
             })
-            print(f"epoch={epoch} train_loss={loss:.6f} val_macro_AP={ap:.6f} best={best}", flush=True)
+            print(f"epoch={epoch} train_loss={loss:.6f} val_macro_AP={metrics['macro_AP']:.6f}"
+                  + (f" function_macro_AP={ap:.6f}" if function_only else "") + f" best={best}", flush=True)
 
     if end_epoch == config["epochs"]:
         if world_size > 1:
@@ -300,6 +376,8 @@ def train(args):
                 "checkpoint_epoch": best["epoch"], "manifest_sha256": manifest_hash,
             })
             print(f"test_macro_AP={metrics['macro_AP']:.6f} checkpoint_epoch={best['epoch']}", flush=True)
+            if function_only:
+                print(f"test_function_macro_AP={metrics['functions']['macro_AP']:.6f}", flush=True)
 
 
 def run_evaluation(args):
@@ -328,12 +406,21 @@ def infer(args):
     model.load_state_dict(checkpoint["model"])
     model.eval()
     batch = collate_pairs([load_sample(args.sample_dir, config["image_size"])])
-    output = model(*model_inputs(batch, device))
-    relations = []
+    inputs = model_inputs(batch, device)
     ids = batch["mask_ids"][0]
+    result = {"mask_ids": ids}
+    if model.function_head is not None:
+        output, functions = model(*inputs, parts=batch["parts"].to(device))
+        result["parts"] = [
+            dict(mask_id=ids[index], function_scores=dict(zip(PSR_FUNC_CAT, scores)))
+            for (_, index), scores in zip(batch["parts"].tolist(), functions.sigmoid().tolist())
+        ]
+    else:
+        output = model(*inputs)
+    relations = []
     for (_, first, second), scores in zip(batch["pairs"].tolist(), output.logits.sigmoid().tolist()):
         relations.append(dict(mask_ids=[ids[first], ids[second]], scores=dict(zip(PSR_KR_CAT, scores))))
-    atomic_json(args.output, {"mask_ids": ids, "relations": relations})
+    atomic_json(args.output, result | {"relations": relations})
 
 
 def prepare(args):
@@ -357,7 +444,9 @@ def main():
     train_parser.add_argument("--manifest", required=True, type=Path)
     train_parser.add_argument("--data-dir", required=True, type=Path)
     train_parser.add_argument("--run-dir", required=True, type=Path)
-    train_parser.add_argument("--resume", action="store_true")
+    initialization = train_parser.add_mutually_exclusive_group()
+    initialization.add_argument("--resume", action="store_true")
+    initialization.add_argument("--init-from", type=Path, help="Relation-only checkpoint for frozen feature training.")
     train_parser.add_argument("--stop-after-epoch", type=int)
     train_parser.add_argument("--no-pretrained", action="store_true")
     train_parser.set_defaults(run=train)

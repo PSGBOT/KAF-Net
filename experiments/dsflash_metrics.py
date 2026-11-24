@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from datasets.psr_labels import PSR_KR_CAT
+from datasets.psr_labels import PSR_FUNC_CAT, PSR_KR_CAT
 
 CUTOFFS = (5, 10, 20)
 
@@ -19,6 +19,33 @@ def _average_precision(scores, labels, support):
     precision = true_positives / (last_at_score + 1)
     recall_increments = np.diff(true_positives, prepend=0) / support
     return float(precision @ recall_increments)
+
+
+def function_metrics(batches):
+    """Compute AP for annotated masks, retaining positives cropped out of view."""
+    classes = len(PSR_FUNC_CAT)
+    missed = np.zeros(classes, dtype=int)
+    scores, labels = [], []
+    scored_masks = 0
+    for logits, targets, unavailable in batches:
+        annotated = targets.any(axis=1)
+        scored_masks += len(logits)
+        scores.append(logits[annotated])
+        labels.append(targets[annotated])
+        missed += unavailable
+    scores = np.concatenate(scores) if scores else np.empty((0, classes))
+    labels = np.concatenate(labels) if labels else np.empty((0, classes), dtype=bool)
+    support = labels.sum(axis=0) + missed
+    aps = [_average_precision(scores[:, c], labels[:, c], support[c]) for c in range(classes)]
+    return {
+        "scored_masks": scored_masks,
+        "annotated_scored_masks": len(scores),
+        "macro_AP": float(np.mean([ap for ap in aps if ap is not None])) if support.any() else None,
+        "per_class": {
+            name: dict(support=int(support[c]), unavailable=int(missed[c]), AP=aps[c])
+            for c, name in enumerate(PSR_FUNC_CAT)
+        },
+    }
 
 
 def relation_metrics(samples):

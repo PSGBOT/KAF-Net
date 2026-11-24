@@ -19,6 +19,30 @@ def _pool_spatial_tokens(features, grid):
     return F.adaptive_avg_pool2d(features, grid)
 
 
+def pool_part_features(features, masks, parts):
+    """Use each mask's fractional coverage to average spatial image features."""
+    if not len(parts):
+        return features.new_empty((0, features.size(1)), dtype=torch.float32)
+    with torch.autocast(device_type=features.device.type, enabled=False):
+        coverage = F.adaptive_avg_pool2d(masks.float(), features.shape[-2:]).flatten(2)
+        tokens = features.float().flatten(2).transpose(1, 2)
+        vectors = torch.bmm(coverage, tokens) / coverage.sum(dim=2, keepdim=True).clamp_min(1e-8)
+    return vectors[parts[:, 0], parts[:, 1]]
+
+
+class PartFunctionHead(nn.Module):
+    def __init__(self, channels, classes):
+        super().__init__()
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(2 * channels), nn.Linear(2 * channels, channels),
+            nn.GELU(), nn.Linear(channels, classes),
+        )
+
+    def forward(self, pyramid, masks, parts):
+        vectors = [pool_part_features(level, masks, parts) for level in pyramid[:2]]
+        return self.classifier(torch.cat(vectors, dim=1))
+
+
 class RelationOutput(NamedTuple):
     logits: torch.Tensor
     swapped_logits: torch.Tensor | None
@@ -102,14 +126,21 @@ class DSFlashHead(nn.Module):
 
 
 class DSFlashSwin(nn.Module):
-    def __init__(self, num_relations, image_size, width, depth, heads, patch_grid, pair_chunk, pretrained=True):
+    def __init__(self, num_relations, image_size, width, depth, heads, patch_grid, pair_chunk,
+                 pretrained=True, num_functions=0):
         super().__init__()
         self.encoder = SwinV2Features(image_size=image_size, pretrained=pretrained)
         self.fpn = get_fpn(96)
         self.head = DSFlashHead(num_relations, 4 * 256, width, depth, heads, patch_grid, pair_chunk)
+        self.function_head = PartFunctionHead(256, num_functions) if num_functions else None
 
-    def forward(self, images, masks, pairs):
+    def forward(self, images, masks, pairs, *, parts=None):
         pyramid = self.fpn(self.encoder(images))
-        grid = (self.head.patch_grid, self.head.patch_grid)
-        features = torch.cat([_pool_spatial_tokens(level, grid) for level in pyramid], dim=1)
-        return self.head(features, masks, pairs)
+        relations = None
+        if pairs is not None:
+            grid = (self.head.patch_grid, self.head.patch_grid)
+            features = torch.cat([_pool_spatial_tokens(level, grid) for level in pyramid], dim=1)
+            relations = self.head(features, masks, pairs)
+        if parts is None:
+            return relations
+        return relations, self.function_head(pyramid, masks, parts)

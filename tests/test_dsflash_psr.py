@@ -163,3 +163,76 @@ def test_spatial_pooling_accumulates_half_features_in_float32():
             torch.testing.assert_close(pooled, torch.full_like(pooled, 2000))
             pooled.sum().backward()
             assert torch.isfinite(features.grad).all()
+
+
+def test_part_pooling_uses_independent_mask_coverage_and_float32():
+    from nets.kaf.dsflash import pool_part_features
+
+    features = torch.tensor([[[[1000., 3000.], [2000., 4000.]]]], dtype=torch.float16)
+    masks = torch.zeros(1, 2, 4, 4, dtype=torch.bool)
+    masks[0, 0, 0, :3] = True
+    masks[0, 1, 0, 1:4] = True
+    parts = torch.tensor([[0, 0], [0, 1]])
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        pooled = pool_part_features(features, masks, parts)
+    assert pooled.dtype == torch.float32
+    torch.testing.assert_close(pooled, torch.tensor([[5000 / 3], [7000 / 3]]))
+
+
+def test_part_labels_merge_repeated_pair_annotations_by_mask_id():
+    from datasets.psr_pairs import build_function_targets
+
+    annotation = {"kinematic relation": [
+        ["mask9", "mask2", {"part0_function": ["handle"], "part1_function": ["frame"]}],
+        ["mask2", "mask9", {"part0_function": ["frame", "other"], "part1_function": ["handle", "door"]}],
+    ]}
+    labels = build_function_targets(annotation, (2, 7, 9))
+    assert labels.shape == (3, 13)
+    assert labels[0].nonzero().flatten().tolist() == [0, 4]
+    assert not labels[1].any()
+    assert labels[2].nonzero().flatten().tolist() == [1, 11]
+
+
+def test_single_mask_has_function_scores_without_any_relation():
+    from nets.kaf.dsflash import DSFlashSwin, PartFunctionHead
+
+    model = DSFlashSwin.__new__(DSFlashSwin)
+    torch.nn.Module.__init__(model)
+    model.encoder = torch.nn.Identity()
+    model.fpn = torch.nn.Identity()
+    model.head = DSFlashHead(14, 8, 16, 1, 4, 2)
+    model.function_head = PartFunctionHead(2, 13)
+    pyramid = tuple(torch.ones(1, 2, 2, 2) for _ in range(4))
+    masks = torch.ones(1, 1, 4, 4, dtype=torch.bool)
+    pairs = torch.empty(0, 3, dtype=torch.long)
+    parts = torch.tensor([[0, 0]])
+    relations, functions = model(pyramid, masks, pairs, parts=parts)
+    assert relations.logits.shape == (0, 14)
+    assert functions.shape == (1, 13)
+    functions.sum().backward()
+    assert model.function_head.classifier[-1].weight.grad is not None
+
+
+def test_part_targets_align_with_collated_indices_and_keep_missing_support():
+    from datasets.psr_pairs import collate_pairs
+    from experiments.dsflash_metrics import function_metrics
+
+    masks = torch.zeros(3, 4, 4, dtype=torch.bool)
+    masks[0, :2, :2] = True
+    masks[2, 1:, 1:] = True
+    function_targets = torch.zeros(3, 13, dtype=torch.bool)
+    function_targets[0, 1] = True
+    function_targets[1, 1] = True
+    batch = collate_pairs([dict(
+        image=torch.zeros(6, 4, 4), masks=masks, mask_ids=(2, 4, 9),
+        function_targets=function_targets,
+    )])
+    assert batch["parts"].tolist() == [[0, 0], [0, 2]]
+    assert batch["function_targets"][:, 1].tolist() == [True, False]
+    scores = torch.zeros(2, 13)
+    scores[0, 1], scores[1, 1] = 0.1, 0.9
+    stats = function_metrics([(scores.numpy(), batch["function_targets"].numpy(),
+                               batch["function_unavailable"].numpy())])
+    assert stats["scored_masks"] == 2
+    assert stats["annotated_scored_masks"] == 1
+    assert stats["per_class"]["handle"] == {"support": 2, "unavailable": 1, "AP": 0.5}

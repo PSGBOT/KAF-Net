@@ -12,7 +12,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-from datasets.psr_labels import PSR_KR_CAT, PSR_MEAN, PSR_STD, relation_index
+from datasets.psr_labels import PSR_FUNC_CAT, PSR_FUNC_CAT_IDX, PSR_KR_CAT, PSR_MEAN, PSR_STD, relation_index
 
 
 _MASK_FILE = re.compile(r"mask(\d+)\.png\Z")
@@ -47,6 +47,26 @@ def build_targets(annotation, mask_ids):
         labels[i, j, relation] = True
         labeled[i, j] = True
     return labels, labeled
+
+
+def annotation_functions(annotation):
+    functions = defaultdict(set)
+    for first, second, relation in annotation["kinematic relation"]:
+        for mask, key in ((first, "part0_function"), (second, "part1_function")):
+            classes = {PSR_FUNC_CAT_IDX[name] for name in (relation.get(key) or ()) if name in PSR_FUNC_CAT_IDX}
+            if classes:
+                functions[int(mask.removeprefix("mask"))].update(classes)
+    return functions
+
+
+def build_function_targets(annotation, mask_ids):
+    positions = {mask_id: index for index, mask_id in enumerate(mask_ids)}
+    labels = torch.zeros(len(mask_ids), len(PSR_FUNC_CAT), dtype=torch.bool)
+    for mask_id, classes in annotation_functions(annotation).items():
+        if mask_id not in positions:
+            raise ValueError(f"Function annotation references missing mask ID {mask_id}.")
+        labels[positions[mask_id], list(classes)] = True
+    return labels
 
 
 def group_source_images(records, seed, val_fraction, test_fraction, *, source_labels=None):
@@ -205,11 +225,12 @@ def load_sample(sample_dir, image_size, training=False):
 
 
 class PSRPairs(Dataset):
-    def __init__(self, data_dir, samples, image_size, training=False):
+    def __init__(self, data_dir, samples, image_size, training=False, functions=False):
         self.data_dir = Path(data_dir)
         self.samples = samples
         self.image_size = image_size
         self.training = training
+        self.functions = functions
 
     def __len__(self):
         return len(self.samples)
@@ -220,6 +241,8 @@ class PSRPairs(Dataset):
         annotation = json.loads((path / "config.json").read_text())
         try:
             sample["targets"], sample["labeled"] = build_targets(annotation, sample["mask_ids"])
+            if self.functions:
+                sample["function_targets"] = build_function_targets(annotation, sample["mask_ids"])
         except ValueError as error:
             raise ValueError(f"{path}: {error}") from error
         return sample
@@ -236,6 +259,14 @@ def collate_pairs(samples):
         valid[index, :len(parts)] = parts.flatten(1).any(dim=1)
     pairs = pair_indices(valid)
     batch = dict(images=images, masks=masks, pairs=pairs, mask_ids=[sample["mask_ids"] for sample in samples])
+    batch["parts"] = valid.nonzero()
+    if "function_targets" in samples[0]:
+        targets = torch.zeros(*valid.shape, len(PSR_FUNC_CAT), dtype=torch.bool)
+        for index, sample in enumerate(samples):
+            labels = sample["function_targets"]
+            targets[index, :len(labels)] = labels
+        batch["function_targets"] = targets[valid]
+        batch["function_unavailable"] = targets[~valid].sum(dim=0)
     if "targets" in samples[0]:
         batch["targets"] = torch.stack([samples[b]["targets"][i, j] for b, i, j in pairs]) if len(pairs) else (
             torch.empty(0, len(PSR_KR_CAT), dtype=torch.bool)

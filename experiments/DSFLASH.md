@@ -26,3 +26,15 @@ python -m experiments.dsflash_psr infer --checkpoint "$run_dir/best.pt" \
 ```
 
 Validation and test use exact mask-pair identity and report relation macro AP, R@5/10/20, mR@5/10/20 and the support for each relation class. AP uses annotated pairs. Recall ranks every valid pair. Use the same grouped manifest for any new KAF comparison.
+
+## Train a part-function head
+
+Use the paired dataset's existing manifest and a relation-only checkpoint trained on that same manifest. Training freezes SwinV2, the FPN, and the relationship head, including their running statistics. The function head pools P2 and P3 with each independent mask's patch coverage in FP32. It predicts 13 sigmoid scores and is selected by validation function macro AP.
+
+```bash
+sbatch --open-mode=append --output="$function_run/train.log" experiments/dsflash_psr.sbatch \
+    "$source_dir" "$function_run" "$dataset" "$manifest" \
+    "$source_dir/experiments/dsflash_swin_psr_functions.json" --init-from "$relation_run/best.pt"
+```
+
+On resume, replace `--init-from ...` with `--resume`. Evaluation adds mask-level AP and class supports under `functions`. Inference adds `parts`, one entry per valid mask ID with 13 `function_scores`. A single mask produces a function prediction and an empty relation list.
