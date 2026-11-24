@@ -11,50 +11,17 @@ from utils.image import draw_umich_gaussian, gaussian_radius
 from datasets.utils.kaf_gen import get_kaf
 from datasets.utils.augimg import generate_mask_colors
 
-PSR_FUNC_CAT = [
-    "other",  # 0
-    "handle",  # 1
-    "housing",  # 2
-    "support",  # 3
-    "frame",  # 4
-    "button",  # 5
-    "wheel",  # 6
-    "display",  # 7
-    "cover",  # 8
-    "plug",  # 9
-    "port",  # 10
-    "door",  # 11
-    "container",  # 12
-]
-PSR_FUNC_CAT_IDX = {v: i for i, v in enumerate(PSR_FUNC_CAT)}
-
-PSR_KR_CAT = [
-    "unknown",
-    "fixed",
-    "revolute-free",
-    "revolute-controlled",
-    "revolute-static",
-    "prismatic-free",
-    "prismatic-controlled",
-    "prismatic-static",
-    "spherical-free",
-    "spherical-controlled",
-    "spherical-static",
-    "supported",
-    "flexible",
-    "unrelated",
-]
-
-PSR_KR_CAT_IDX = {v: i for i, v in enumerate(PSR_KR_CAT)}
-
-PSR_MEAN = [0.40789654, 0.44719302, 0.47026115]
-PSR_STD = [0.28863828, 0.27408164, 0.27809835]
-PSR_EIGEN_VALUES = [0.2141788, 0.01817699, 0.00341571]
-PSR_EIGEN_VECTORS = [
-    [-0.58752847, -0.69563484, 0.41340352],
-    [-0.5832747, 0.00994535, -0.81221408],
-    [-0.56089297, 0.71832671, 0.41158938],
-]
+from datasets.psr_labels import (
+    PSR_EIGEN_VALUES,
+    PSR_EIGEN_VECTORS,
+    PSR_FUNC_CAT,
+    PSR_FUNC_CAT_IDX,
+    PSR_KR_CAT,
+    PSR_KR_CAT_IDX,
+    PSR_MEAN,
+    PSR_STD,
+    relation_index,
+)
 
 
 def maskname_to_index(maskname="mask0"):
@@ -135,20 +102,7 @@ class PSRDataset(Dataset):
         return len(self.samples)
 
     def _parse_relations(self, relations):
-        # relations is expected to be a dictionary, e.g., {'type': 'revolute-free', 'root_index': 0}
-        joint_type = relations.get("joint_type", "unknown")
-        controllable = relations.get("controllable")
-
-        if joint_type in ["fixed", "unrelated", "supported", "flexible"]:
-            relation_type = joint_type
-        elif controllable:
-            relation_type = f"{joint_type}-{controllable}"
-        else:
-            relation_type = joint_type  # Fallback, though should be covered by above
-
-        relation_idx = self.kr_cat_ids.get(relation_type, 0)
-        root = int(relations.get("root", 0))  # Convert root to integer
-        return relation_idx, root
+        return relation_index(relations, self.kr_cat_ids), int(relations.get("root", 0))
 
     def _process_image_and_masks(self, sample_path, src_img, flipped, trans_img):
         height, width = src_img.shape[0], src_img.shape[1]

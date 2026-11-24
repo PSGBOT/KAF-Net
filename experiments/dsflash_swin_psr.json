@@ -1,0 +1,23 @@
+{
+  "seed": 317,
+  "image_size": 512,
+  "validation_fraction": 0.1,
+  "test_fraction": 0.1,
+  "width": 192,
+  "depth": 2,
+  "heads": 6,
+  "patch_grid": 16,
+  "pair_chunk": 32,
+  "epochs": 20,
+  "warmup_epochs": 1,
+  "global_batch_size": 32,
+  "workers_per_gpu": 4,
+  "backbone_lr": 0.00005,
+  "head_lr": 0.0003,
+  "weight_decay": 0.01,
+  "max_grad_norm": 1.0,
+  "max_positive_weight": 10.0,
+  "consistency_weight": 0.1,
+  "amp": true,
+  "log_interval": 50
+}

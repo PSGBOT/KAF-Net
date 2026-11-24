@@ -1,0 +1,7 @@
+# DSFlash relations for PSR
+
+Use the SwinV2-T feature encoder and FPN from KAF-Net with the independent masks supplied by PSR. Implement the pair-conditioned patch embeddings, Transformer neck, complementary gate, shared predictor, and swap consistency described in DSFlash §3. Aggregate the two branches into one 14-label score vector per unordered pair. Use one shared image feature extraction per forward, retaining the MCM encoder input for comparability. Masks remain separate for pair conditioning, including where they overlap.
+
+Keep annotated mask IDs and enumerate nonempty pairs per image. Duplicated annotations of a label for a pair form one target. Score explicit `unrelated` and `unknown` labels using the existing taxonomy. Ignore unannotated pairs when fitting labels, while retaining their scores for inference. Add a deterministic manifest that groups examples by source-image SHA-256, deduplicates the old test copies, and logs label support for fresh train, validation, and test partitions.
+
+Run training via the DSFlash experiment configuration and evaluate exact mask-pair IDs, labelwise AP, recall at K, and class support. Select checkpoints on validation only and preserve optimizer, scheduler, and AMP state for recovery. Use the existing ImageNet Swin weights to initialize training. Deploy into a separate labserver0 run directory and launch on four free A6000s after 14:00 Asia/Shanghai on 2026-11-24.

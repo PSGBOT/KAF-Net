@@ -1,13 +1,9 @@
 import math
 import torch
 import torch.nn as nn
-import numpy as np
 import copy
 
-# your DCN import (keeps your original)
-from lib.DCNv2.dcn_v2 import DCN
 from nets.kaf.fpn import get_fpn
-import timm
 
 BN_MOMENTUM = 0.1
 
@@ -80,6 +76,8 @@ class DCNLayer(nn.Module):
         self, in_ch, out_ch, kernel_size=3, stride=1, padding=1, deformable_groups=1
     ):
         super(DCNLayer, self).__init__()
+        from lib.DCNv2.dcn_v2 import DCN
+
         self.k = kernel_size
         # main DCN conv; signature follows your DCN constructor
         # (in_channels, out_channels, kernel_size=(k,k), stride=..., padding=..., deformable_groups=...)
@@ -96,14 +94,15 @@ class DCNLayer(nn.Module):
         return self.dcn(x)
 
 
-class KAF_SwinT(nn.Module):
-    def __init__(self, head_conv, num_classes, num_rel):
+class SwinV2Features(nn.Module):
+    """Shared SwinV2 stages with the original KAF-Net RGB/MCM fusion."""
+
+    def __init__(self, image_size=512, pretrained=True):
         super().__init__()
-        self.num_classes = num_classes
-        self.num_rel = num_rel
+        import timm
 
         swin = timm.create_model(
-            "swinv2_tiny_window8_256.ms_in1k", pretrained=True, img_size=512
+            "swinv2_tiny_window8_256.ms_in1k", pretrained=pretrained, img_size=image_size
         )
         # 分离 Swin 组件
         self.patch_embed = swin.patch_embed
@@ -114,6 +113,46 @@ class KAF_SwinT(nn.Module):
         self.patch_embed_mask = swin.patch_embed
         self.stage1_mask = copy.deepcopy(swin.layers[0])
         self.feature_fusion = FeatureFusion(96, 96, 96)  # Keep for stage1 fusion
+
+    def forward(self, x):
+        # Split input into RGB and mask channels
+        rgb = x[:, :3, :, :]  # First 3 channels (RGB)
+        mask = x[:, 3:, :, :]  # Last 3 channels (masks)
+
+        # ---- RGB branch stage1 ----
+        rgb = self.patch_embed(rgb)
+        rgb_feat1 = self.stage1(rgb)
+
+        # ---- Mask branch stage1 ----
+        mask = self.patch_embed_mask(mask)
+        mask_feat1 = self.stage1_mask(mask)
+
+        rgb_feat1 = rgb_feat1.permute(0, 3, 1, 2).contiguous()
+        mask_feat1 = mask_feat1.permute(0, 3, 1, 2).contiguous()
+        # ---- Fusion ----
+        fused_feat1 = self.feature_fusion(rgb_feat1, mask_feat1)
+        fused_feat1 = fused_feat1.permute(0, 2, 3, 1)
+
+        # ---- Shared stage2–4 ----
+        feat2 = self.stage2(fused_feat1)
+        feat3 = self.stage3(feat2)
+        feat4 = self.stage4(feat3)
+
+        # ---- FPN ----
+        return [
+            fused_feat1.permute(0, 3, 1, 2).contiguous(),
+            feat2.permute(0, 3, 1, 2).contiguous(),
+            feat3.permute(0, 3, 1, 2).contiguous(),
+            feat4.permute(0, 3, 1, 2).contiguous(),
+        ]
+
+
+class KAF_SwinT(SwinV2Features):
+    def __init__(self, head_conv, num_classes, num_rel):
+        super().__init__()
+        self.num_classes = num_classes
+        self.num_rel = num_rel
+
         self.fpn_1 = get_fpn(96)
         self.fpn_2 = get_fpn(96)
 
@@ -162,36 +201,7 @@ class KAF_SwinT(nn.Module):
                     nn.init.constant_(m.bias, 50.0)
 
     def forward(self, x):
-        # Split input into RGB and mask channels
-        rgb = x[:, :3, :, :]  # First 3 channels (RGB)
-        mask = x[:, 3:, :, :]  # Last 3 channels (masks)
-
-        # ---- RGB branch stage1 ----
-        rgb = self.patch_embed(rgb)
-        rgb_feat1 = self.stage1(rgb)
-
-        # ---- Mask branch stage1 ----
-        mask = self.patch_embed_mask(mask)
-        mask_feat1 = self.stage1_mask(mask)
-
-        rgb_feat1 = rgb_feat1.permute(0, 3, 1, 2).contiguous()
-        mask_feat1 = mask_feat1.permute(0, 3, 1, 2).contiguous()
-        # ---- Fusion ----
-        fused_feat1 = self.feature_fusion(rgb_feat1, mask_feat1)
-        fused_feat1 = fused_feat1.permute(0, 2, 3, 1)
-
-        # ---- Shared stage2–4 ----
-        feat2 = self.stage2(fused_feat1)
-        feat3 = self.stage3(feat2)
-        feat4 = self.stage4(feat3)
-
-        # ---- FPN ----
-        feats = [
-            fused_feat1.permute(0, 3, 1, 2).contiguous(),
-            feat2.permute(0, 3, 1, 2).contiguous(),
-            feat3.permute(0, 3, 1, 2).contiguous(),
-            feat4.permute(0, 3, 1, 2).contiguous(),
-        ]
+        feats = super().forward(x)
         p2_1, p3_1, p4_1, p5_1 = self.fpn_1(feats)
         p2_2, p3_2, p4_2, p5_2 = self.fpn_2(feats)
 
@@ -223,7 +233,7 @@ def get_kaf_swint(head_conv=64, num_classes=13, num_rel=14):
 
 
 if __name__ == "__main__":
-    import torch
+    from lib.DCNv2.dcn_v2 import DCN
 
     def hook(self, input, output):
         try:
