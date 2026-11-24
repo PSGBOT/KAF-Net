@@ -12,6 +12,13 @@ from nets.kaf.fpn import get_fpn
 from nets.kaf.kaf_swint import SwinV2Features
 
 
+def _pool_spatial_tokens(features, grid):
+    # Torch 1.13 can accumulate in the input dtype for CUDA adaptive pooling.
+    if features.dtype in (torch.float16, torch.bfloat16):
+        features = features.float()
+    return F.adaptive_avg_pool2d(features, grid)
+
+
 class RelationOutput(NamedTuple):
     logits: torch.Tensor
     swapped_logits: torch.Tensor | None
@@ -60,7 +67,7 @@ class DSFlashHead(nn.Module):
             return RelationOutput(logits, logits if self.training else None, features.new_zeros(0))
 
         grid = (self.patch_grid, self.patch_grid)
-        image_tokens = F.adaptive_avg_pool2d(features, grid).flatten(2).transpose(1, 2)
+        image_tokens = _pool_spatial_tokens(features, grid).flatten(2).transpose(1, 2)
         image_tokens = self.project(image_tokens)
         coverage = F.adaptive_avg_pool2d(masks.float(), grid).flatten(2)
 
@@ -104,5 +111,5 @@ class DSFlashSwin(nn.Module):
     def forward(self, images, masks, pairs):
         pyramid = self.fpn(self.encoder(images))
         grid = (self.head.patch_grid, self.head.patch_grid)
-        features = torch.cat([F.adaptive_avg_pool2d(level, grid) for level in pyramid], dim=1)
+        features = torch.cat([_pool_spatial_tokens(level, grid) for level in pyramid], dim=1)
         return self.head(features, masks, pairs)

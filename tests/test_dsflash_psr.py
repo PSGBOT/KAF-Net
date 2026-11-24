@@ -150,3 +150,16 @@ def test_missing_annotated_mask_is_not_silently_dropped():
     annotation = {"kinematic relation": [["mask0", "mask1", {"kinematic_joints": [{"joint_type": "fixed"}]}]]}
     with pytest.raises(ValueError, match="missing mask"):
         build_targets(annotation, (0,))
+
+
+def test_spatial_pooling_accumulates_half_features_in_float32():
+    from nets.kaf.dsflash import _pool_spatial_tokens
+
+    for dtype in (torch.float16, torch.bfloat16):
+        for device in ("cpu", "cuda") if torch.cuda.is_available() else ("cpu",):
+            features = torch.full((1, 1, 128, 128), 2000, dtype=dtype, device=device, requires_grad=True)
+            pooled = _pool_spatial_tokens(features, (16, 16))
+            assert pooled.dtype == torch.float32
+            torch.testing.assert_close(pooled, torch.full_like(pooled, 2000))
+            pooled.sum().backward()
+            assert torch.isfinite(features.grad).all()
